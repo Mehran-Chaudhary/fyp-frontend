@@ -11,8 +11,19 @@ export interface TabNavItem {
 }
 
 /** Route-backed tabs under a page header (Team, Settings). */
-export function TabNav({ items, className, 'aria-label': ariaLabel }: { items: TabNavItem[]; className?: string; 'aria-label': string }) {
-  const { pathname } = useLocation();
+export function TabNav({
+  items,
+  className,
+  keepSearch = false,
+  'aria-label': ariaLabel,
+}: {
+  items: TabNavItem[];
+  className?: string;
+  /** Carry the current query string to every tab (e.g. a list's filters under a drawer). */
+  keepSearch?: boolean;
+  'aria-label': string;
+}) {
+  const { pathname, search } = useLocation();
   const trimmed = pathname.replace(/\/+$/, '');
 
   return (
@@ -23,7 +34,8 @@ export function TabNav({ items, className, 'aria-label': ariaLabel }: { items: T
           return (
             <li key={to} className="shrink-0">
               <Link
-                to={to}
+                to={keepSearch ? { pathname: to, search } : to}
+                preventScrollReset={keepSearch}
                 aria-current={active ? 'page' : undefined}
                 className={cn(
                   'relative inline-flex h-10 items-center gap-2 rounded-t-md px-3 text-[13.5px] whitespace-nowrap transition-colors',

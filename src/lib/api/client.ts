@@ -1,6 +1,7 @@
 import { markReachable, markUnreachable } from '@/lib/connectivity';
 import { API_BASE_URL } from '@/lib/env';
 import { createEmitter } from '@/lib/events';
+import { filenameFromDisposition } from './content-disposition';
 import { ApiError, networkError, REFRESHABLE_401, toApiError } from './errors';
 import { endSession, getAccessToken, peekAccessToken, refreshAccessToken } from './token-manager';
 import type { ApiResult, ApiSuccess, Paginated, ResponseMeta } from './types';
@@ -207,8 +208,8 @@ export async function callPaginated<T>(path: string, options: RequestOptions = {
 }
 
 /**
- * A raw file download (E21 is not enveloped). Errors are still enveloped JSON, and
- * are thrown as ApiError like any other call.
+ * A raw file download (E21, E72 are not enveloped). Errors are still enveloped
+ * JSON, and are thrown as ApiError like any other call.
  */
 export async function download(
   path: string,
@@ -216,10 +217,7 @@ export async function download(
 ): Promise<{ blob: Blob; filename: string | null }> {
   let filename: string | null = null;
   const { data } = await send<Blob>(path, options, async (res) => {
-    const disposition = res.headers.get('content-disposition') ?? '';
-    const star = /filename\*=(?:UTF-8'')?([^;]+)/i.exec(disposition);
-    const plain = /filename="?([^";]+)"?/i.exec(disposition);
-    filename = star ? decodeURIComponent(star[1].replace(/"/g, '')) : (plain?.[1] ?? null);
+    filename = filenameFromDisposition(res.headers.get('content-disposition'));
     return { data: await res.blob(), meta: metaFromHeaders(res) };
   });
   return { blob: data, filename };

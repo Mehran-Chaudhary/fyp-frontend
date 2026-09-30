@@ -22,10 +22,12 @@ import { Skeleton } from '@/components/ui/misc';
 import { authApi } from '@/lib/api/endpoints';
 import { hasCode } from '@/lib/api/errors';
 import type { PermissionDefinition } from '@/lib/api/types';
+import { formatBytes, sumBytes } from '@/lib/knowledge/files';
 import { useDocumentTitle } from '@/lib/hooks';
 import { meQuery, mfaQuery, permissionCatalogueQuery, workspaceDetailsQuery } from '@/lib/queries';
 import { toast, toastError } from '@/lib/toast';
 import { cn, formatDate, formatRelative, pluralize } from '@/lib/utils';
+import { useKnowledgeBases } from '@/features/knowledge/shared/use-knowledge-access';
 import { primaryRoleLabel, useCan, useWorkspace } from '@/features/workspaces/workspace-context';
 import { PERMISSION_CATEGORY_LABELS } from './nav';
 
@@ -48,14 +50,15 @@ export function HomePage() {
           Welcome, {me?.displayName ?? workspace.membership.displayName}.
         </h1>
         <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted">
-          This is your workspace's command center. Your team, roles and security policy are ready to set up; agents, the
-          document vault and workflows arrive in the coming phases.
+          This is your workspace's command center. Your team, roles, security policy and document vault are ready to set up;
+          agents and workflows arrive in the coming phases.
         </p>
       </header>
 
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)]">
         <GettingStarted />
         <div className="grid gap-6">
+          <VaultCard />
           <MembershipCard />
           <WorkspaceCard />
         </div>
@@ -84,9 +87,12 @@ function GettingStarted() {
   const { data: me } = useQuery(meQuery);
   const mfa = useQuery(mfaQuery);
   const details = useQuery({ ...workspaceDetailsQuery(workspace.id), enabled: can('workspace:read') });
+  const knowledgeBases = useKnowledgeBases();
   const [sending, setSending] = useState(false);
   const hasTeam = (details.data?.memberCount ?? 0) > 1;
   const canInvite = can('member:invite');
+  const seesVault = can('knowledgebase:read');
+  const hasDocuments = knowledgeBases.list.some((knowledgeBase) => knowledgeBase.stats.documents > 0);
 
   const resend = async () => {
     if (!me) return;
@@ -143,14 +149,22 @@ function GettingStarted() {
           } satisfies ChecklistItem,
         ]
       : []),
-    {
-      key: 'documents',
-      icon: <Database />,
-      title: 'Add documents to the vault',
-      description: 'Upload policies and reports; PII is redacted before any model sees them.',
-      state: 'soon',
-      phase: 3,
-    },
+    ...(seesVault
+      ? [
+          {
+            key: 'documents',
+            icon: <Database />,
+            title: 'Add documents to the vault',
+            description: 'Upload policies and reports; PII is masked before any model sees them.',
+            state: hasDocuments ? 'done' : knowledgeBases.isPending ? 'loading' : 'todo',
+            action: (
+              <Button asChild variant="secondary" size="sm">
+                <Link to={`/w/${workspace.slug}/documents`}>Open vault</Link>
+              </Button>
+            ),
+          } satisfies ChecklistItem,
+        ]
+      : []),
     {
       key: 'agent',
       icon: <Bot />,
@@ -241,6 +255,75 @@ function StepMarker({ state, icon }: { state: ChecklistItem['state']; icon: Reac
     >
       {icon}
     </span>
+  );
+}
+
+// ── Document vault (Phase 3) ────────────────────────────────────────────────
+
+function VaultCard() {
+  const workspace = useWorkspace();
+  const can = useCan();
+  const knowledgeBases = useKnowledgeBases();
+  if (!can('knowledgebase:read')) return null;
+
+  const list = knowledgeBases.list;
+  const totals = list.reduce(
+    (sum, knowledgeBase) => ({
+      documents: sum.documents + knowledgeBase.stats.documents,
+      ready: sum.ready + knowledgeBase.stats.ready,
+      processing: sum.processing + knowledgeBase.stats.processing,
+      failed: sum.failed + knowledgeBase.stats.failed,
+    }),
+    { documents: 0, ready: 0, processing: 0, failed: 0 },
+  );
+
+  return (
+    <Card>
+      <CardHeader
+        title="Document vault"
+        actions={
+          <Button asChild variant="ghost" size="xs">
+            <Link to={`/w/${workspace.slug}/documents`}>Open</Link>
+          </Button>
+        }
+      />
+      <CardBody>
+        {knowledgeBases.isPending ? (
+          <div className="grid gap-3">
+            <Skeleton className="h-2 w-full rounded-full" />
+            <Skeleton className="h-3.5 w-2/3" />
+            <Skeleton className="h-3.5 w-1/2" />
+          </div>
+        ) : knowledgeBases.isError ? (
+          <ErrorState compact error={knowledgeBases.error} onRetry={() => void knowledgeBases.refetch()} retrying={knowledgeBases.isFetching} />
+        ) : (
+          <>
+            <div className="flex h-1.5 overflow-hidden rounded-full bg-well-strong" aria-hidden>
+              {totals.documents > 0 ? (
+                <>
+                  <span className="bg-success-500" style={{ width: `${(totals.ready / totals.documents) * 100}%` }} />
+                  <span className="bg-info-500" style={{ width: `${(totals.processing / totals.documents) * 100}%` }} />
+                  <span className="bg-danger-500" style={{ width: `${(totals.failed / totals.documents) * 100}%` }} />
+                </>
+              ) : null}
+            </div>
+            <dl className="mt-2 divide-y divide-line/70">
+              <DetailRow label="Knowledge bases">{list.length.toLocaleString()}</DetailRow>
+              <DetailRow label="Documents">
+                <span className="tabular">
+                  {totals.documents.toLocaleString()}
+                  {totals.processing ? <span className="font-normal text-info-700"> · {totals.processing} processing</span> : null}
+                  {totals.failed ? <span className="font-normal text-danger-700"> · {totals.failed} failed</span> : null}
+                </span>
+              </DetailRow>
+              <DetailRow label="Storage you can access">
+                <span className="font-mono tabular">{formatBytes(sumBytes(list.map((knowledgeBase) => knowledgeBase.stats.totalBytes)))}</span>
+              </DetailRow>
+            </dl>
+          </>
+        )}
+      </CardBody>
+    </Card>
   );
 }
 

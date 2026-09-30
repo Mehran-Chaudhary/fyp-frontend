@@ -131,13 +131,90 @@ export const router = createBrowserRouter([
                 index: true,
                 lazy: () => import('@/features/shell/home-page').then((m) => ({ Component: m.HomePage })),
               },
-              ...(['agents', 'workflows', 'documents', 'audit'] as const).map((section) => ({
+              ...(['agents', 'workflows', 'audit'] as const).map((section) => ({
                 path: section,
                 lazy: () =>
                   import('@/features/shell/section-page').then((m) => ({
                     Component: () => <m.SectionPage section={section} />,
                   })),
               })),
+
+              // ── Knowledge (Phase 3 §5) ──
+              {
+                // The vault stays mounted under the document drawer, which has its own URL.
+                path: 'documents',
+                handle: { wide: true },
+                lazy: () => import('@/features/knowledge/vault/vault-page').then((m) => ({ Component: m.VaultPage })),
+                children: [
+                  // No document open: the drawer's outlet renders nothing.
+                  { index: true, Component: () => null },
+                  {
+                    path: ':documentId',
+                    lazy: () =>
+                      import('@/features/knowledge/document/document-drawer').then((m) => ({ Component: m.DocumentDrawer })),
+                    children: [
+                      {
+                        index: true,
+                        lazy: () =>
+                          import('@/features/knowledge/document/overview-tab').then((m) => ({
+                            Component: m.DocumentOverviewTab,
+                          })),
+                      },
+                      {
+                        path: 'chunks',
+                        lazy: () =>
+                          import('@/features/knowledge/document/chunks-tab').then((m) => ({ Component: m.DocumentChunksTab })),
+                      },
+                      {
+                        path: 'pii',
+                        lazy: () => import('@/features/knowledge/document/pii-tab').then((m) => ({ Component: m.DocumentPiiTab })),
+                      },
+                    ],
+                  },
+                ],
+              },
+              {
+                path: 'knowledge-bases',
+                lazy: () =>
+                  import('@/features/knowledge/knowledge-bases/knowledge-bases-page').then((m) => ({
+                    Component: m.KnowledgeBasesPage,
+                  })),
+              },
+              {
+                path: 'knowledge-bases/new',
+                lazy: () =>
+                  import('@/features/knowledge/knowledge-bases/new-knowledge-base-page').then((m) => ({
+                    Component: m.NewKnowledgeBasePage,
+                  })),
+              },
+              {
+                path: 'knowledge-bases/:knowledgeBaseId',
+                lazy: () =>
+                  import('@/features/knowledge/knowledge-bases/knowledge-base-layout').then((m) => ({
+                    Component: m.KnowledgeBaseLayout,
+                  })),
+                children: [
+                  {
+                    index: true,
+                    lazy: () =>
+                      import('@/features/knowledge/knowledge-bases/settings-tab').then((m) => ({
+                        Component: m.KnowledgeBaseSettingsTab,
+                      })),
+                  },
+                  {
+                    path: 'access',
+                    lazy: () =>
+                      import('@/features/knowledge/knowledge-bases/access-tab').then((m) => ({
+                        Component: m.KnowledgeBaseAccessTab,
+                      })),
+                  },
+                ],
+              },
+              {
+                path: 'search',
+                handle: { wide: true },
+                lazy: () => import('@/features/knowledge/search/search-page').then((m) => ({ Component: m.SearchPage })),
+              },
 
               // ── Team (Phase 2 §5.1–§5.6) ──
               {

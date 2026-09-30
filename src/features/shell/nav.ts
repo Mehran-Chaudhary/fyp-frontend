@@ -24,7 +24,7 @@ export interface SectionDefinition {
 }
 
 /** Sections from phases up to this one are built; later ones show a placeholder. */
-export const LIVE_PHASE = 2;
+export const LIVE_PHASE = 3;
 
 /**
  * Workspace sections. A section shows a placeholder until its phase ships; the
@@ -132,6 +132,15 @@ export const SUBSECTION_LABELS: Record<string, string> = {
   roles: 'Roles',
   security: 'Security',
   'api-keys': 'API keys',
+};
+
+/**
+ * Pages that belong to a section without having their own nav item, for the
+ * breadcrumb (Documents › Knowledge bases, Documents › Search).
+ */
+export const PAGE_PARENTS: Record<string, { parent: SectionKey; label: string }> = {
+  'knowledge-bases': { parent: 'documents', label: 'Knowledge bases' },
+  search: { parent: 'documents', label: 'Search' },
 };
 
 export const NAV_GROUPS: Array<{ key: 'build' | 'govern'; label: string; sections: SectionKey[] }> = [

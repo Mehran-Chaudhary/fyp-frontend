@@ -1,4 +1,5 @@
 import { useSession } from '@/lib/auth/session';
+import { missingConfigurationOf, recordLayerGap, type KnowledgeCapability } from '@/lib/knowledge/layer';
 import { queryKeys } from '@/lib/queries';
 import { queryClient } from '@/lib/query-client';
 import { toastError } from '@/lib/toast';
@@ -20,10 +21,16 @@ export function installGlobalErrorHandler(): void {
   if (installed) return;
   installed = true;
 
-  apiEvents.on('error', ({ error, options }) => {
+  apiEvents.on('error', ({ error, options, path }) => {
     const workspaceId = options.workspaceId;
 
     switch (error.code) {
+      case 'KNOWLEDGE_LAYER_NOT_CONFIGURED':
+        // Not handled here: the screen still explains it. Remember it for the session
+        // so the other knowledge screens disable what can't work (Phase 3 §6.9).
+        if (workspaceId) recordLayerGap(workspaceId, missingConfigurationOf(error.details), capabilityOf(path));
+        return;
+
       case 'PERMISSION_DENIED': {
         // Roles change at any moment: a 403 means our copy of the permissions is stale.
         if (workspaceId) {
@@ -61,4 +68,13 @@ export function installGlobalErrorHandler(): void {
         }
     }
   });
+}
+
+/** Which knowledge capability a refused path belongs to. */
+function capabilityOf(path: string): KnowledgeCapability | undefined {
+  if (path.endsWith('/rag/query')) return 'search';
+  if (path.endsWith('/download')) return 'download';
+  if (path.endsWith('/reindex')) return 'reindex';
+  if (path.endsWith('/documents') && path.includes('/knowledge-bases/')) return 'upload';
+  return undefined;
 }

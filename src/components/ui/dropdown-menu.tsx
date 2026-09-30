@@ -1,11 +1,12 @@
-import { Check } from 'lucide-react';
+import { Check, ChevronRight } from 'lucide-react';
 import { DropdownMenu as Primitive } from 'radix-ui';
-import type { ComponentProps } from 'react';
+import type { ComponentProps, ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 
 export const DropdownMenu = Primitive.Root;
 export const DropdownMenuTrigger = Primitive.Trigger;
 export const DropdownMenuGroup = Primitive.Group;
+export const DropdownMenuSub = Primitive.Sub;
 
 export function DropdownMenuContent({
   className,
@@ -78,4 +79,36 @@ export function DropdownMenuLabel({ className, ...props }: ComponentProps<typeof
 
 export function DropdownMenuSeparator({ className, ...props }: ComponentProps<typeof Primitive.Separator>) {
   return <Primitive.Separator className={cn('-mx-1 my-1 h-px bg-line', className)} {...props} />;
+}
+
+/** An item that opens a nested menu; `hint` shows the current choice on the right. */
+export function DropdownMenuSubTrigger({
+  className,
+  children,
+  hint,
+  ...props
+}: ComponentProps<typeof Primitive.SubTrigger> & { hint?: ReactNode }) {
+  return (
+    <Primitive.SubTrigger className={cn(itemClass, 'data-[state=open]:bg-well data-[state=open]:text-ink', className)} {...props}>
+      {children}
+      {hint ? <span className="ml-auto max-w-32 truncate pl-3 text-xs text-muted">{hint}</span> : <span className="ml-auto" />}
+      <ChevronRight className="!size-3.5" aria-hidden />
+    </Primitive.SubTrigger>
+  );
+}
+
+export function DropdownMenuSubContent({ className, ...props }: ComponentProps<typeof Primitive.SubContent>) {
+  return (
+    <Primitive.Portal>
+      <Primitive.SubContent
+        sideOffset={6}
+        className={cn(
+          'scrollbar-thin z-50 max-h-[min(24rem,var(--radix-dropdown-menu-content-available-height))] min-w-52 overflow-y-auto rounded-xl border border-line bg-surface p-1 text-ink shadow-pop',
+          'origin-(--radix-dropdown-menu-content-transform-origin) data-[state=open]:animate-pop-in data-[state=closed]:animate-pop-out',
+          className,
+        )}
+        {...props}
+      />
+    </Primitive.Portal>
+  );
 }

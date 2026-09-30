@@ -1,18 +1,22 @@
 import { useQuery } from '@tanstack/react-query';
 import { ChevronRight, Menu, PanelLeftClose, PanelLeftOpen, ShieldAlert, ShieldCheck } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
-import { Link, NavLink, useLocation } from 'react-router';
+import { Fragment, useState, type ReactNode } from 'react';
+import { Link, NavLink, useLocation, useMatches } from 'react-router';
 import { Logo } from '@/components/brand/logo';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/misc';
 import { Sheet } from '@/components/ui/sheet';
+import { Spinner } from '@/components/ui/spinner';
 import { Tooltip } from '@/components/ui/tooltip';
-import { mfaQuery } from '@/lib/queries';
+import { knowledgeBaseQuery, mfaQuery } from '@/lib/queries';
 import { STORAGE_KEYS, storage } from '@/lib/storage';
 import { cn } from '@/lib/utils';
+import { SidebarKnowledgeBases } from '@/features/knowledge/sidebar-knowledge-bases';
+import { UploadWatcher } from '@/features/knowledge/upload/upload-activity';
+import { useUploadsActive } from '@/features/knowledge/upload/use-uploads-active';
 import { primaryRoleLabel, useCan, useWorkspace } from '@/features/workspaces/workspace-context';
 import { WorkspaceSwitcher } from '@/features/workspaces/workspace-switcher';
-import { HOME_NAV, LIVE_PHASE, NAV_GROUPS, SECTIONS, SUBSECTION_LABELS, type SectionKey } from './nav';
+import { HOME_NAV, LIVE_PHASE, NAV_GROUPS, PAGE_PARENTS, SECTIONS, SUBSECTION_LABELS, type SectionKey } from './nav';
 import { EmailVerificationBanner, TopBar } from './top-bar';
 
 function initialCollapsed(): boolean {
@@ -28,6 +32,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const workspace = useWorkspace();
   const [collapsed, setCollapsed] = useState(initialCollapsed);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // Data-dense pages (the vault, search) ask for more room with `handle: { wide: true }`.
+  const wide = useMatches().some((match) => (match.handle as { wide?: boolean } | undefined)?.wide === true);
 
   const toggleCollapsed = () => {
     const next = !collapsed;
@@ -66,43 +72,69 @@ export function AppShell({ children }: { children: ReactNode }) {
         </TopBar>
         <EmailVerificationBanner />
         <main className="flex-1 px-4 py-6 sm:px-8 sm:py-8">
-          <div className="mx-auto w-full max-w-6xl">{children}</div>
+          <div className={cn('mx-auto w-full', wide ? 'max-w-[92rem]' : 'max-w-6xl')}>{children}</div>
         </main>
       </div>
+      <UploadWatcher />
     </div>
   );
+}
+
+interface Crumb {
+  label: ReactNode;
+  to?: string;
 }
 
 function Breadcrumb({ workspaceName, slug }: { workspaceName: string; slug: string }) {
   const location = useLocation();
   const [, , , segment, sub] = location.pathname.split('/') as Array<string | undefined>;
+  const base = `/w/${slug}`;
+  const crumbs: Crumb[] = [];
+
   const section = segment ? SECTIONS[segment as SectionKey] : undefined;
-  const subLabel = section && sub ? SUBSECTION_LABELS[sub] : undefined;
-  const sectionLabel = section ? section.label : segment ? 'Not found' : HOME_NAV.label;
+  const page = segment ? PAGE_PARENTS[segment] : undefined;
+  if (section) {
+    const subLabel = sub ? SUBSECTION_LABELS[sub] : undefined;
+    crumbs.push({ label: section.label, to: subLabel ? `${base}/${segment}` : undefined });
+    if (subLabel) crumbs.push({ label: subLabel });
+  } else if (page) {
+    // Pages that live under a section without their own nav item (knowledge bases, search).
+    crumbs.push({ label: SECTIONS[page.parent].label, to: `${base}/${page.parent}` });
+    crumbs.push({ label: page.label, to: sub ? `${base}/${segment}` : undefined });
+    if (sub === 'new') crumbs.push({ label: 'New' });
+    else if (sub && segment === 'knowledge-bases') crumbs.push({ label: <KnowledgeBaseCrumb knowledgeBaseId={sub} /> });
+  } else {
+    crumbs.push({ label: segment ? 'Not found' : HOME_NAV.label });
+  }
 
   return (
     <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-[13px]">
-      <Link to={`/w/${slug}`} className="truncate rounded-sm text-muted hover:text-ink">
+      <Link to={base} className="truncate rounded-sm text-muted hover:text-ink">
         {workspaceName}
       </Link>
-      <ChevronRight className="size-3.5 shrink-0 text-faint" aria-hidden />
-      {subLabel ? (
-        <>
-          <Link to={`/w/${slug}/${segment}`} className="truncate rounded-sm text-muted hover:text-ink">
-            {sectionLabel}
-          </Link>
+      {crumbs.map((crumb, index) => (
+        <Fragment key={index}>
           <ChevronRight className="size-3.5 shrink-0 text-faint" aria-hidden />
-          <span className="truncate font-medium text-ink" aria-current="page">
-            {subLabel}
-          </span>
-        </>
-      ) : (
-        <span className="truncate font-medium text-ink" aria-current="page">
-          {sectionLabel}
-        </span>
-      )}
+          {crumb.to ? (
+            <Link to={crumb.to} className="truncate rounded-sm text-muted hover:text-ink">
+              {crumb.label}
+            </Link>
+          ) : (
+            <span className="truncate font-medium text-ink" aria-current="page">
+              {crumb.label}
+            </span>
+          )}
+        </Fragment>
+      ))}
     </nav>
   );
+}
+
+/** The knowledge base's name once its page has loaded it; nothing is fetched just for the crumb. */
+function KnowledgeBaseCrumb({ knowledgeBaseId }: { knowledgeBaseId: string }) {
+  const workspace = useWorkspace();
+  const cached = useQuery({ ...knowledgeBaseQuery(workspace.id, knowledgeBaseId), enabled: false });
+  return <>{cached.data?.name ?? 'Knowledge base'}</>;
 }
 
 function SidebarContent({
@@ -116,6 +148,7 @@ function SidebarContent({
 }) {
   const workspace = useWorkspace();
   const can = useCan();
+  const uploads = useUploadsActive();
   const base = `/w/${workspace.slug}`;
 
   return (
@@ -158,16 +191,33 @@ function SidebarContent({
               <ul className="grid gap-0.5">
                 {visible.map((key) => {
                   const section = SECTIONS[key];
+                  const documents = key === 'documents';
                   return (
-                    <NavItem
-                      key={key}
-                      to={`${base}/${key}`}
-                      icon={section.icon}
-                      label={section.label}
-                      collapsed={collapsed}
-                      onNavigate={onNavigate}
-                      soon={section.phase > LIVE_PHASE}
-                    />
+                    <Fragment key={key}>
+                      <NavItem
+                        to={`${base}/${key}`}
+                        icon={section.icon}
+                        label={section.label}
+                        collapsed={collapsed}
+                        onNavigate={onNavigate}
+                        soon={section.phase > LIVE_PHASE}
+                        alsoActive={documents ? [`${base}/knowledge-bases`, `${base}/search`] : undefined}
+                        badge={
+                          documents && uploads.active ? (
+                            <Tooltip content="Uploading documents" side="right">
+                              <span className="inline-flex text-brand-600" aria-label="Uploading documents">
+                                <Spinner className="size-3.5" />
+                              </span>
+                            </Tooltip>
+                          ) : null
+                        }
+                      />
+                      {documents && !collapsed && can('knowledgebase:read') ? (
+                        <li>
+                          <SidebarKnowledgeBases onNavigate={onNavigate} />
+                        </li>
+                      ) : null}
+                    </Fragment>
                   );
                 })}
               </ul>
@@ -198,6 +248,8 @@ function NavItem({
   collapsed,
   onNavigate,
   soon,
+  alsoActive,
+  badge,
 }: {
   to: string;
   end?: boolean;
@@ -206,7 +258,13 @@ function NavItem({
   collapsed: boolean;
   onNavigate?: () => void;
   soon?: boolean;
+  /** Other paths that belong to this item (a section's pages without their own nav item). */
+  alsoActive?: string[];
+  /** Shown at the right edge (an activity marker). */
+  badge?: ReactNode;
 }) {
+  const { pathname } = useLocation();
+  const extra = !!alsoActive?.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
   const link = (
     <NavLink
       to={to}
@@ -217,11 +275,13 @@ function NavItem({
         cn(
           'group relative flex h-9 items-center gap-2.5 rounded-lg text-[13.5px] transition-colors',
           collapsed ? 'justify-center' : 'px-2.5',
-          isActive ? 'bg-well-strong/70 font-medium text-ink' : 'text-ink-soft hover:bg-well hover:text-ink',
+          isActive || extra ? 'bg-well-strong/70 font-medium text-ink' : 'text-ink-soft hover:bg-well hover:text-ink',
         )
       }
     >
-      {({ isActive }) => (
+      {({ isActive: matched }) => {
+        const isActive = matched || extra;
+        return (
         <>
           {isActive && !collapsed ? (
             <span className="absolute top-2 bottom-2 -left-3 w-[3px] rounded-r-full bg-brand-500" aria-hidden />
@@ -230,18 +290,23 @@ function NavItem({
             className={cn('size-[17px] shrink-0', isActive ? 'text-brand-600' : 'text-faint group-hover:text-ink-soft')}
             aria-hidden
           />
-          {collapsed ? null : (
+          {collapsed ? (
+            badge ? <span className="absolute top-1 right-1">{badge}</span> : null
+          ) : (
             <>
               <span className="truncate">{label}</span>
               {soon ? (
                 <span className="ml-auto rounded border border-line px-1 text-[10px] leading-4 font-medium text-faint">
                   Soon
                 </span>
+              ) : badge ? (
+                <span className="ml-auto">{badge}</span>
               ) : null}
             </>
           )}
         </>
-      )}
+        );
+      }}
     </NavLink>
   );
   return <li>{collapsed ? <Tooltip content={label} side="right">{link}</Tooltip> : link}</li>;

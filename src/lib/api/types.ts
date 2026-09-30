@@ -475,6 +475,324 @@ export interface CreatedApiKey {
   warning: string;
 }
 
+// ── Phase 3: knowledge bases, documents, retrieval (spec Appendix A) ─────────
+
+export type Classification = 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED';
+export type KnowledgeBaseAccessMode = 'WORKSPACE' | 'RESTRICTED';
+export type AccessLevel = 'READ' | 'WRITE' | 'MANAGE';
+
+export interface KnowledgeBaseStats {
+  /** Within your clearance. */
+  documents: number;
+  ready: number;
+  /** UPLOADED + PARSING + CHUNKING + EMBEDDING */
+  processing: number;
+  failed: number;
+  /** A 64-bit count, sent as a string. */
+  totalBytes: string;
+}
+
+export interface KnowledgeBase {
+  id: string;
+  name: string;
+  description: string | null;
+  accessMode: KnowledgeBaseAccessMode;
+  defaultClassification: Classification;
+  embeddingModel: string;
+  embeddingDimensions: number;
+  /** null: inherited (knowledge base → workspace → platform). */
+  chunkSize: number | null;
+  chunkOverlap: number | null;
+  /** Your effective level: MANAGE on every workspace-mode base. */
+  access: AccessLevel;
+  stats: KnowledgeBaseStats;
+  /** A user id. */
+  createdById: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ListKnowledgeBasesParams {
+  page?: number;
+  /** ≤100 */
+  limit?: number;
+  search?: string;
+  sortBy?: 'name' | 'createdAt' | 'updatedAt';
+  sortDirection?: SortDirection;
+}
+
+export interface CreateKnowledgeBaseRequest {
+  name: string;
+  description?: string;
+  accessMode?: KnowledgeBaseAccessMode;
+  defaultClassification?: Classification;
+  chunkSize?: number;
+  chunkOverlap?: number;
+}
+
+/** Send only what changed. */
+export interface UpdateKnowledgeBaseRequest {
+  name?: string;
+  /** null or '' removes it. */
+  description?: string | null;
+  accessMode?: KnowledgeBaseAccessMode;
+  defaultClassification?: Classification;
+  /** null: back to inheriting. */
+  chunkSize?: number | null;
+  chunkOverlap?: number | null;
+}
+
+export type GrantSubjectType = 'ROLE' | 'MEMBER' | 'API_KEY';
+
+export interface KnowledgeBaseGrant {
+  id: string;
+  subjectType: GrantSubjectType;
+  /** A role id, a MEMBERSHIP id, or an API key id. */
+  subjectId: string;
+  subjectLabel: string | null;
+  accessLevel: AccessLevel;
+  /** A user id. */
+  grantedById: string | null;
+  createdAt: string;
+}
+
+export interface UpsertGrantRequest {
+  subjectType: GrantSubjectType;
+  subjectId: string;
+  accessLevel: AccessLevel;
+}
+
+export type DocumentStatus = 'UPLOADED' | 'PARSING' | 'CHUNKING' | 'EMBEDDING' | 'READY' | 'FAILED';
+export type DocumentFileType = 'PDF' | 'DOCX' | 'TXT' | 'MARKDOWN';
+
+/** Keys may be missing; show only those present. */
+export interface DocumentProcessingMetrics {
+  queueWaitMs?: number;
+  downloadMs?: number;
+  parseMs?: number;
+  persistMs?: number;
+  embedMs?: number;
+  indexMs?: number;
+  totalMs?: number;
+  attempts?: number;
+  embeddingTokens?: number;
+}
+
+/** A vault document. Named so it doesn't clash with the DOM's `Document`. */
+export interface VaultDocument {
+  id: string;
+  knowledgeBaseId: string;
+  title: string;
+  description: string | null;
+  tags: string[];
+  originalFilename: string;
+  fileType: DocumentFileType;
+  /** Detected from the content. */
+  mimeType: string;
+  /** A 64-bit count, sent as a string. */
+  sizeBytes: string;
+  classification: Classification;
+  status: DocumentStatus;
+  /** A failure explanation, or a retry notice while in progress. */
+  statusMessage: string | null;
+  /** An open set (spec §4.1.2): never switch on it exhaustively. */
+  failureCode: string | null;
+  isSearchable: boolean;
+  /** The run in progress, or the last one. */
+  indexVersion: number;
+  /** The version retrieval serves; null until the first run succeeds. */
+  activeIndexVersion: number | null;
+  chunkCount: number;
+  tokenCount: number;
+  pageCount: number | null;
+  language: string | null;
+  embeddingModel: string | null;
+  processingMetrics: DocumentProcessingMetrics;
+  /** A user id; null when an API key uploaded it or the account was erased. */
+  uploadedById: string | null;
+  /** Changes on every transition, and as a heartbeat while embedding. */
+  lastStatusAt: string;
+  processingCompletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type DocumentSortField = 'createdAt' | 'updatedAt' | 'title' | 'sizeBytes' | 'status';
+
+export interface ListDocumentsParams {
+  page?: number;
+  /** ≤100 */
+  limit?: number;
+  knowledgeBaseId?: string;
+  /** Sent comma-separated (BF-18). */
+  status?: DocumentStatus[];
+  classification?: Classification;
+  search?: string;
+  sortBy?: DocumentSortField;
+  sortDirection?: SortDirection;
+}
+
+export interface UploadDocumentFields {
+  title?: string;
+  description?: string;
+  classification?: Classification;
+  /** Sent as one comma-separated string. */
+  tags?: string[];
+}
+
+/** Send only what changed. */
+export interface UpdateDocumentRequest {
+  title?: string;
+  /** null or '' removes it. */
+  description?: string | null;
+  classification?: Classification;
+  /** Replaces the tags; [] removes them. */
+  tags?: string[];
+}
+
+export interface DocumentChunk {
+  id: string;
+  chunkIndex: number;
+  text: string;
+  tokenCount: number;
+  pageStart: number | null;
+  pageEnd: number | null;
+}
+
+export type RetrievalMode = 'hybrid' | 'dense';
+
+export interface RetrievalQuery {
+  query: string;
+  knowledgeBaseIds?: string[];
+  documentIds?: string[];
+  /** Capped at 50 by the server. */
+  topK?: number;
+  mode?: RetrievalMode;
+  /** Dense mode only. */
+  minScore?: number;
+  rerank?: boolean;
+}
+
+export interface RetrievedChunk {
+  chunkId: string;
+  documentId: string;
+  documentTitle: string;
+  knowledgeBaseId: string;
+  knowledgeBaseName: string;
+  classification: Classification;
+  chunkIndex: number;
+  pageStart: number | null;
+  pageEnd: number | null;
+  /** From 1. */
+  rank: number;
+  /** Comparable within one response only: never a percentage. */
+  score: number;
+  text: string;
+}
+
+export interface RetrievalTimings {
+  accessMs: number;
+  embedMs: number;
+  searchMs: number;
+  hydrateMs: number;
+  rerankMs: number;
+  totalMs: number;
+}
+
+export interface RetrievalResponse {
+  retrievalId: string;
+  mode: RetrievalMode;
+  topK: number;
+  reranked: boolean;
+  embeddingModel: string;
+  knowledgeBasesSearched: number;
+  clearance: Classification;
+  effectiveClearance: Classification;
+  results: RetrievedChunk[];
+  timings: RetrievalTimings;
+}
+
+export interface AccessScopeKnowledgeBase {
+  id: string;
+  name: string;
+  accessMode: KnowledgeBaseAccessMode;
+  access: AccessLevel;
+}
+
+export interface AccessScope {
+  clearance: Classification;
+  readableClassifications: Classification[];
+  bypassesCompartments: boolean;
+  knowledgeBases: AccessScopeKnowledgeBase[];
+}
+
+export interface DetectedEntity {
+  entityType: string;
+  /** In the normalised text (NFKC, unified line endings): for ordering only. */
+  start: number;
+  end: number;
+  score: number;
+  source: 'pattern' | 'ner' | 'custom' | 'propagation';
+  /** Informational; never branch on it. */
+  recognizer: string;
+  /** e.g. "[PERSON_1]" */
+  placeholder: string;
+  /** Only when revealed. */
+  value?: string;
+}
+
+export interface ChunkPiiReport {
+  chunkId: string;
+  chunkIndex: number;
+  pageStart: number | null;
+  maskedText: string;
+  entities: DetectedEntity[];
+}
+
+export interface DocumentPiiReport {
+  documentId: string;
+  chunks: ChunkPiiReport[];
+  /** This page only. */
+  byType: Record<string, number>;
+  /** This page only. */
+  entityCount: number;
+  page: number;
+  totalChunks: number;
+  degraded: boolean;
+  revealed: boolean;
+  timings: { patternMs: number; nerMs: number; maskingMs: number; totalMs: number };
+}
+
+/** GET …/pii/entity-types (a Phase 4 endpoint, `pii:policy:read`). */
+export interface PiiEntityType {
+  type: string;
+  label: string;
+  description: string;
+  detector: 'pattern' | 'ner' | 'custom';
+  /** Whether this deployment can detect it right now. */
+  available: boolean;
+  enabled: boolean;
+  example: string;
+}
+
+/** GET …/pii/policy (a Phase 4 endpoint, `pii:policy:read`). Phase 3 reads `enabled` only. */
+export interface PiiPolicy {
+  source: 'default' | 'workspace';
+  version: number;
+  enabled: boolean;
+  entityTypes: string[];
+  nerEntityTypes: string[];
+  scoreThreshold: number;
+  onDetectorFailure: 'REFUSE' | 'DEGRADE_TO_PATTERNS';
+  language: string;
+  allowList: string[];
+  denyList: string[] | null;
+  denyListCount: number;
+  nerDetector: { kind: string; configured: boolean; missingConfiguration: string[] };
+  warnings: string[];
+  updatedAt: string | null;
+}
+
 // ── Error codes (full list: backend src/common/enums/error-code.enum.ts) ────
 export type ErrorCode =
   | 'INTERNAL_SERVER_ERROR'
@@ -545,4 +863,25 @@ export type ErrorCode =
   | 'API_KEY_INVALID'
   | 'API_KEY_EXPIRED'
   | 'API_KEY_REVOKED'
+  // Phase 3
+  | 'KNOWLEDGE_BASE_NOT_FOUND'
+  | 'KNOWLEDGE_BASE_NAME_TAKEN'
+  | 'KNOWLEDGE_BASE_ACCESS_DENIED'
+  | 'KNOWLEDGE_BASE_GRANT_NOT_FOUND'
+  | 'CLASSIFICATION_EXCEEDS_CLEARANCE'
+  | 'DOCUMENT_NOT_FOUND'
+  | 'DOCUMENT_DUPLICATE'
+  | 'DOCUMENT_TYPE_NOT_ALLOWED'
+  | 'DOCUMENT_CONTENT_MISMATCH'
+  | 'DOCUMENT_EMPTY'
+  | 'DOCUMENT_PROCESSING'
+  | 'DOCUMENT_CONTENT_UNAVAILABLE'
+  | 'STORAGE_QUOTA_EXCEEDED'
+  | 'PAYLOAD_TOO_LARGE'
+  | 'KNOWLEDGE_LAYER_NOT_CONFIGURED'
+  | 'AI_SERVICE_UNAVAILABLE'
+  | 'VECTOR_STORE_UNAVAILABLE'
+  | 'OBJECT_STORAGE_UNAVAILABLE'
+  | 'PII_DETECTION_UNAVAILABLE'
+  | 'AUTH_SCHEME_NOT_ALLOWED'
   | 'NETWORK_ERROR'; // client-side only: the request never got an API answer

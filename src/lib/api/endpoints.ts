@@ -1,6 +1,7 @@
 import { call, callPaginated, download, request, workspacePath } from './client';
 import type {
   AcceptInvitationResponse,
+  AccessScope,
   ApiKey,
   AuthResponse,
   ChangePasswordRequest,
@@ -9,15 +10,22 @@ import type {
   CreatedApiKey,
   CreateInvitationRequest,
   CreateIpRuleRequest,
+  CreateKnowledgeBaseRequest,
   CreateOrganizationRequest,
   CreateRoleRequest,
   CurrentUser,
+  DocumentChunk,
+  DocumentPiiReport,
   EraseAccountRequest,
   ErasureOutcome,
   Invitation,
   InvitationPreview,
   IpRule,
+  KnowledgeBase,
+  KnowledgeBaseGrant,
+  ListDocumentsParams,
   ListInvitationsParams,
+  ListKnowledgeBasesParams,
   ListMembersParams,
   LoginRequest,
   LoginResponse,
@@ -29,16 +37,24 @@ import type {
   Organization,
   OrganizationWithMembership,
   PermissionCatalogue,
+  PiiEntityType,
+  PiiPolicy,
   RegisterRequest,
   RemoveMemberResponse,
+  RetrievalQuery,
+  RetrievalResponse,
   Role,
   SecondFactor,
   Session,
+  UpdateDocumentRequest,
+  UpdateKnowledgeBaseRequest,
   UpdateMemberProfileRequest,
   UpdateOrganizationRequest,
   UpdateProfileRequest,
   UpdateProfileResponse,
   UpdateRoleRequest,
+  UpsertGrantRequest,
+  VaultDocument,
 } from './types';
 
 /**
@@ -367,5 +383,154 @@ export const apiKeysApi = {
   revoke: (workspaceId: string, apiKeyId: string, reason?: string) => {
     const [path, scope] = workspacePath(workspaceId, `/api-keys/${id(apiKeyId)}`);
     return call<ApiKey>(path, { ...scope, method: 'DELETE', body: reason ? { reason } : {} });
+  },
+};
+
+// ── Phase 3 ─────────────────────────────────────────────────────────────────
+
+/** E76: the server allows 60 s; wait slightly longer so its answer arrives (spec §2.2). */
+const RETRIEVAL_TIMEOUT_MS = 65_000;
+/** E72: the server allows 120 s for large files. */
+const DOCUMENT_DOWNLOAD_TIMEOUT_MS = 130_000;
+
+export const knowledgeBasesApi = {
+  /** E60. Only bases you can read; `stats` count what your clearance covers. */
+  list: (workspaceId: string, params: ListKnowledgeBasesParams = {}) => {
+    const [path, scope] = workspacePath(workspaceId, '/knowledge-bases');
+    return callPaginated<KnowledgeBase>(path, { ...scope, query: { ...params } });
+  },
+
+  /** E61. A RESTRICTED base comes with a MANAGE grant for you (unless you're the owner). */
+  create: (workspaceId: string, body: CreateKnowledgeBaseRequest) => {
+    const [path, scope] = workspacePath(workspaceId, '/knowledge-bases');
+    return call<KnowledgeBase>(path, { ...scope, method: 'POST', body });
+  },
+
+  /** E62. Unknown, deleted and hidden bases all answer 404. */
+  get: (workspaceId: string, knowledgeBaseId: string) => {
+    const [path, scope] = workspacePath(workspaceId, `/knowledge-bases/${id(knowledgeBaseId)}`);
+    return call<KnowledgeBase>(path, scope);
+  },
+
+  /** E63. Send only what changed; `null` chunk settings return to inheriting. */
+  update: (workspaceId: string, knowledgeBaseId: string, body: UpdateKnowledgeBaseRequest) => {
+    const [path, scope] = workspacePath(workspaceId, `/knowledge-bases/${id(knowledgeBaseId)}`);
+    return call<KnowledgeBase>(path, { ...scope, method: 'PATCH', body });
+  },
+
+  /** E64. Destroys every document's key in the same transaction. */
+  remove: (workspaceId: string, knowledgeBaseId: string) => {
+    const [path, scope] = workspacePath(workspaceId, `/knowledge-bases/${id(knowledgeBaseId)}`);
+    return call<{ deleted: true }>(path, { ...scope, method: 'DELETE' });
+  },
+
+  /** E65. Oldest first, not paginated. Needs MANAGE on the base. */
+  grants: (workspaceId: string, knowledgeBaseId: string) => {
+    const [path, scope] = workspacePath(workspaceId, `/knowledge-bases/${id(knowledgeBaseId)}/grants`);
+    return call<KnowledgeBaseGrant[]>(path, scope);
+  },
+
+  /** E66. An upsert: granting the same subject again changes its level (same grant id). */
+  upsertGrant: (workspaceId: string, knowledgeBaseId: string, body: UpsertGrantRequest) => {
+    const [path, scope] = workspacePath(workspaceId, `/knowledge-bases/${id(knowledgeBaseId)}/grants`);
+    return call<KnowledgeBaseGrant>(path, { ...scope, method: 'PUT', body });
+  },
+
+  /** E67. Effective on the next request, including for yourself. */
+  revokeGrant: (workspaceId: string, knowledgeBaseId: string, grantId: string) => {
+    const [path, scope] = workspacePath(workspaceId, `/knowledge-bases/${id(knowledgeBaseId)}/grants/${id(grantId)}`);
+    return call<{ revoked: true }>(path, { ...scope, method: 'DELETE' });
+  },
+};
+
+export const documentsApi = {
+  /** E69. Documents above your clearance or in hidden bases are simply not listed. */
+  list: (workspaceId: string, params: ListDocumentsParams = {}) => {
+    const [path, scope] = workspacePath(workspaceId, '/documents');
+    const { status, ...rest } = params;
+    // BF-18: several statuses in one comma-separated parameter.
+    return callPaginated<VaultDocument>(path, {
+      ...scope,
+      query: { ...rest, status: status?.length ? status.join(',') : undefined },
+    });
+  },
+
+  /** E70 */
+  get: (workspaceId: string, documentId: string) => {
+    const [path, scope] = workspacePath(workspaceId, `/documents/${id(documentId)}`);
+    return call<VaultDocument>(path, scope);
+  },
+
+  /** E71. The version retrieval serves, in order. Chunk ids change on every reindex. */
+  chunks: (workspaceId: string, documentId: string, page: number, limit = 20) => {
+    const [path, scope] = workspacePath(workspaceId, `/documents/${id(documentId)}/chunks`);
+    return callPaginated<DocumentChunk>(path, { ...scope, query: { page, limit } });
+  },
+
+  /** E72. The original bytes, not enveloped. Every download is audited. */
+  download: (workspaceId: string, documentId: string) => {
+    const [path, scope] = workspacePath(workspaceId, `/documents/${id(documentId)}/download`);
+    return download(path, { ...scope, timeoutMs: DOCUMENT_DOWNLOAD_TIMEOUT_MS });
+  },
+
+  /** E73. Send only what changed. Reclassification applies to search immediately. */
+  update: (workspaceId: string, documentId: string, body: UpdateDocumentRequest) => {
+    const [path, scope] = workspacePath(workspaceId, `/documents/${id(documentId)}`);
+    return call<VaultDocument>(path, { ...scope, method: 'PATCH', body });
+  },
+
+  /** E74. Allowed when READY (reindex) or FAILED (retry); answers 202. */
+  reindex: (workspaceId: string, documentId: string) => {
+    const [path, scope] = workspacePath(workspaceId, `/documents/${id(documentId)}/reindex`);
+    return call<VaultDocument>(path, { ...scope, method: 'POST' });
+  },
+
+  /** E75. The content is unrecoverable at once. */
+  remove: (workspaceId: string, documentId: string) => {
+    const [path, scope] = workspacePath(workspaceId, `/documents/${id(documentId)}`);
+    return call<{ deleted: true }>(path, { ...scope, method: 'DELETE' });
+  },
+};
+
+export const ragApi = {
+  /** E76. A mutation: never cached. Has its own 60-per-minute budget. */
+  query: (workspaceId: string, body: RetrievalQuery, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, '/rag/query');
+    return call<RetrievalResponse>(path, { ...scope, method: 'POST', body, timeoutMs: RETRIEVAL_TIMEOUT_MS, signal });
+  },
+
+  /** E77. Works even when the knowledge layer isn't configured. */
+  accessScope: (workspaceId: string) => {
+    const [path, scope] = workspacePath(workspaceId, '/rag/access-scope');
+    return call<AccessScope>(path, scope);
+  },
+};
+
+export const piiApi = {
+  /** E78. Its own 30-per-minute budget. `reveal` needs pii:reveal and is audited as CRITICAL. */
+  documentReport: (
+    workspaceId: string,
+    documentId: string,
+    params: { page: number; limit: number; reveal?: boolean },
+    signal?: AbortSignal,
+  ) => {
+    const [path, scope] = workspacePath(workspaceId, `/pii/documents/${id(documentId)}/report`);
+    return call<DocumentPiiReport>(path, {
+      ...scope,
+      query: { page: params.page, limit: params.limit, reveal: params.reveal ? true : undefined },
+      signal,
+    });
+  },
+
+  /** Phase 4 endpoint, read for the report's legend. Best effort: failures only lose labels. */
+  entityTypes: (workspaceId: string) => {
+    const [path, scope] = workspacePath(workspaceId, '/pii/entity-types');
+    return call<PiiEntityType[]>(path, { ...scope, globalErrors: false });
+  },
+
+  /** Phase 4 endpoint, read for the "redaction is off" banner. Best effort. */
+  policy: (workspaceId: string) => {
+    const [path, scope] = workspacePath(workspaceId, '/pii/policy');
+    return call<PiiPolicy>(path, { ...scope, globalErrors: false });
   },
 };

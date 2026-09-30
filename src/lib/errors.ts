@@ -125,9 +125,73 @@ export function messageFor(error: unknown): string {
       return 'That API key no longer exists.';
     case 'IP_ALLOWLIST_SELF_LOCKOUT':
       return error.message || 'This change would block your own network address from the workspace.';
+
+    // ── Phase 3 (spec §8) ──
+    case 'KNOWLEDGE_BASE_NOT_FOUND':
+      // Never "access denied": a hidden base must not be confirmed to exist (§3.4).
+      return "This knowledge base doesn't exist or you don't have access to it.";
+    case 'KNOWLEDGE_BASE_ACCESS_DENIED': {
+      const granted = typeof details.granted === 'string' ? details.granted : null;
+      const required = typeof details.required === 'string' ? details.required : null;
+      if (granted === 'READ') return 'You have read-only access to this knowledge base.';
+      return granted && required
+        ? `You have ${levelWord(granted)} access to this knowledge base; this needs ${levelWord(required)}.`
+        : "Your access to this knowledge base doesn't allow that.";
+    }
+    case 'KNOWLEDGE_BASE_NAME_TAKEN':
+      return 'A knowledge base with this name already exists in this workspace.';
+    case 'KNOWLEDGE_BASE_GRANT_NOT_FOUND':
+      return 'That access grant was already removed.';
+    case 'CLASSIFICATION_EXCEEDS_CLEARANCE': {
+      const clearance = typeof details.clearance === 'string' ? details.clearance : null;
+      return clearance
+        ? `Above your clearance (${sentenceCase(clearance)}). You can only assign classifications up to it.`
+        : 'Above your clearance. You can only assign classifications up to it.';
+    }
+    case 'DOCUMENT_NOT_FOUND':
+      return "This document doesn't exist or you don't have access to it.";
+    case 'DOCUMENT_DUPLICATE':
+      return typeof details.existingTitle === 'string'
+        ? `Already in this knowledge base as “${details.existingTitle}”.`
+        : 'An identical file is already in this knowledge base.';
+    case 'DOCUMENT_TYPE_NOT_ALLOWED':
+    case 'DOCUMENT_CONTENT_MISMATCH':
+    case 'DOCUMENT_EMPTY':
+      return error.message || "This file isn't accepted.";
+    case 'PAYLOAD_TOO_LARGE':
+      return 'Larger than the 50 MB limit.';
+    case 'DOCUMENT_PROCESSING':
+      return 'Already being processed. Try again when processing finishes.';
+    case 'DOCUMENT_CONTENT_UNAVAILABLE':
+      return error.status === 409
+        ? "The stored file failed its integrity check and won't be served. Delete this document and upload it again."
+        : 'The stored file is no longer available. Delete this document and upload it again.';
+    case 'STORAGE_QUOTA_EXCEEDED':
+      return error.message || "This upload would exceed the workspace's storage quota.";
+    case 'KNOWLEDGE_LAYER_NOT_CONFIGURED':
+      return "Document uploads and search aren't set up on this server yet.";
+    case 'OBJECT_STORAGE_UNAVAILABLE':
+      return 'Document storage is temporarily unavailable. Try again in a few minutes.';
+    case 'AI_SERVICE_UNAVAILABLE':
+    case 'VECTOR_STORE_UNAVAILABLE':
+      return 'Search is temporarily unavailable. Try again in a few minutes.';
+    case 'PII_DETECTION_UNAVAILABLE':
+      return 'Sensitive-data detection is unavailable, and this workspace refuses to show unprotected text to models. Try again later.';
+    case 'RESOURCE_NOT_FOUND':
+      return error.message || "That doesn't exist any more.";
+    case 'AUTH_SCHEME_NOT_ALLOWED':
+      return 'This action needs a signed-in user, not an API key.';
     default:
       return error.message || 'Something went wrong.';
   }
+}
+
+function levelWord(level: string): string {
+  return level === 'READ' ? 'read' : level === 'WRITE' ? 'write' : level === 'MANAGE' ? 'manage' : level.toLowerCase();
+}
+
+function sentenceCase(value: string): string {
+  return value.charAt(0) + value.slice(1).toLowerCase();
 }
 
 function stringList(value: unknown): string[] {
@@ -144,9 +208,25 @@ export function titleFor(error: unknown, fallback = "That didn't work"): string 
   if (!isApiError(error)) return fallback;
   if (error.code === 'NETWORK_ERROR') return 'Connection problem';
   if (error.code === 'RATE_LIMIT_EXCEEDED') return 'Slow down';
-  if (error.code === 'PERMISSION_DENIED' || error.code === 'FORBIDDEN' || error.code === 'CANNOT_ESCALATE_PRIVILEGES') {
+  if (
+    error.code === 'PERMISSION_DENIED' ||
+    error.code === 'FORBIDDEN' ||
+    error.code === 'CANNOT_ESCALATE_PRIVILEGES' ||
+    error.code === 'KNOWLEDGE_BASE_ACCESS_DENIED'
+  ) {
     return 'Not allowed';
   }
+  if (error.code === 'CLASSIFICATION_EXCEEDS_CLEARANCE') return 'Above your clearance';
+  if (error.code === 'KNOWLEDGE_LAYER_NOT_CONFIGURED') return 'Not set up yet';
+  if (
+    error.code === 'OBJECT_STORAGE_UNAVAILABLE' ||
+    error.code === 'AI_SERVICE_UNAVAILABLE' ||
+    error.code === 'VECTOR_STORE_UNAVAILABLE' ||
+    error.code === 'PII_DETECTION_UNAVAILABLE'
+  ) {
+    return 'Temporarily unavailable';
+  }
+  if (error.code === 'DOCUMENT_NOT_FOUND' || error.code === 'KNOWLEDGE_BASE_NOT_FOUND') return 'Not available';
   if (error.status >= 500) return 'Server error';
   return fallback;
 }

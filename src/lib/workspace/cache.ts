@@ -1,3 +1,4 @@
+import { invalidateKnowledgeAccess } from '../knowledge/cache';
 import { queryKeys } from '../queries';
 import { queryClient } from '../query-client';
 import { STORAGE_KEYS, storage } from '../storage';
@@ -20,6 +21,8 @@ export async function refreshMyAccess(workspaceId: string): Promise<void> {
     queryClient.invalidateQueries({ queryKey: queryKeys.permissions(workspaceId) }),
     queryClient.invalidateQueries({ queryKey: queryKeys.me }),
   ]);
+  // Clearance and knowledge-base grants follow roles (Phase 3 §10.4).
+  await invalidateKnowledgeAccess(workspaceId);
 }
 
 /** E39–E43: a member's profile, roles or status changed. */
@@ -29,6 +32,8 @@ export function invalidateMembers(workspaceId: string): Promise<unknown> {
     queryClient.invalidateQueries({ queryKey: queryKeys.member(workspaceId) }),
     queryClient.invalidateQueries({ queryKey: queryKeys.details(workspaceId) }),
     queryClient.invalidateQueries({ queryKey: queryKeys.roleMemberCounts(workspaceId) }),
+    // A removed member's grants stop working and leave the grant lists (Phase 3 §3.2).
+    invalidateKnowledgeAccess(workspaceId),
   ]);
 }
 

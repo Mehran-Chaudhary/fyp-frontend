@@ -7,6 +7,9 @@ University Islamabad). This repository implements:
   ([`docs/PHASE_1_FOUNDATION_AUTH_WORKSPACE.md`](docs/PHASE_1_FOUNDATION_AUTH_WORKSPACE.md))
 - **Phase 2: Workspace Administration**: team, roles, invitations, API keys and
   security settings ([`docs/PHASE_2_WORKSPACE_ADMINISTRATION.md`](docs/PHASE_2_WORKSPACE_ADMINISTRATION.md))
+- **Phase 3: Knowledge Bases & Document Vault**: the vault, uploads, the pipeline, document
+  detail, PII reports, knowledge bases and their access grants, and the retrieval playground
+  ([`docs/PHASE_3_KNOWLEDGE_DOCUMENT_VAULT.md`](docs/PHASE_3_KNOWLEDGE_DOCUMENT_VAULT.md))
 
 ## Stack
 
@@ -68,6 +71,10 @@ src/
     rbac/         the anti-escalation rules (rank, "grant only what you hold"), mirrored from the server
     workspace/    invitation/API-key status, IP/CIDR matching (copied from the backend), email
                   masking, allowed domains, and what to refetch after each admin change (cache.ts)
+    knowledge/    the access model (clearance, levels, what each action needs), document status
+                  and polling, file checks, the XHR upload and the upload queue, downloads, PII
+                  placeholders, vault filters, bulk runs, knowledge-layer gaps, and what to
+                  refetch after each knowledge change (cache.ts)
     validation/   password policy and slug rules mirrored from the backend, Zod schemas
     queries.ts    query keys and query options (every workspace key starts with ['ws', id])
   components/     UI kit (ui/), brand, loading/error/empty states (feedback/)
@@ -79,6 +86,10 @@ src/
     team/         members (+ drawer), invitations, roles and the role editor
     settings/     general (profile, retention, chunking, leave, transfer, delete), security
                   (MFA / verified-email requirements, allowed domains, IP allowlist), API keys
+    knowledge/    vault/ (table, toolbar, Ask, panels, bulk actions, drop zone), upload/ (dialog,
+                  activity, watcher), document/ (drawer: overview, chunks, PII report),
+                  knowledge-bases/ (list, form, settings, access grants), search/ (playground),
+                  shared/ (badges, file glyphs, masked text, access hooks)
     invitations/  the public invitation landing page the backend emails
     misc/         root layout, error boundary, 404, goodbye
 ```
@@ -121,3 +132,37 @@ src/
   they never enter the query cache, storage, URLs or logs.
 - Filters on the Members and Invitations tabs live in the URL, so a filtered view survives
   reloads, the back button and opening a member's drawer.
+
+## Things worth knowing before you change knowledge code (Phase 3)
+
+- **Hidden means 404.** The server never confirms that something you can't see exists, so a
+  hidden and a deleted document or knowledge base get the same words ("doesn't exist or you
+  don't have access to it"). Two people can see different totals for the same workspace;
+  never "fix" that on the client.
+- **Three gates: permission, level, clearance.** `useKnowledgeAccess()` resolves the
+  permission snapshot (wildcards included) into the concrete set `lib/knowledge/access.ts`
+  expects; `useActionGate()` turns a missing permission into *hidden* and a low level on a
+  knowledge base (or a server that can't do it yet) into *disabled, with the reason*.
+  Classifications offered anywhere are only those within your clearance.
+- **Uploads don't go through `request()`.** `fetch` can't report upload progress, so
+  `lib/knowledge/upload.ts` uses XHR with the client's token handling. Files go through the
+  app's upload queue (`lib/knowledge/app-upload-queue.ts`): at most three at a time, held
+  when `x-ratelimit-remaining` reaches 0 (until `x-ratelimit-reset`), requeued after a 429's
+  `Retry-After`, and the waiting files are stopped by errors every file would hit (quota,
+  permission, the knowledge layer). Uploads carry on after the dialog closes; signing out
+  aborts them, and leaving the page while they run asks first.
+- **No push events: poll.** The vault's current page and an open document poll with
+  `pollInterval` (2 s, 5 s, 15 s as statuses age; none when nothing is processing).
+  `useSettleWatcher` refreshes stats, chunks and PII reports when a document finishes.
+- **A missing knowledge layer is remembered for the session.** The first `503
+  KNOWLEDGE_LAYER_NOT_CONFIGURED` is recorded (`lib/knowledge/layer.ts`, from the global error
+  handler or the upload queue); uploads, reindexing, downloads or search are disabled
+  according to the settings it names, and the banner offers "Check again".
+- **Document text stays in memory.** Retrieval runs as a mutation with `gcTime: 0`; revealed
+  PII is fetched outside the query cache and hidden after 60 s or when the tab is hidden; a
+  question handed from the vault's Ask box to Search goes through module memory, never the URL.
+- **No bulk endpoints.** Bulk reindex, reclassify and delete (and "reindex all" on a
+  knowledge base) run the single calls one at a time, at most four per second
+  (`lib/knowledge/bulk.ts`), skip what you can't act on, and report per-row failures.
+- **For local work** the backend's `npm run start:standins` (Phase 3 spec §13) serves the
+  real API with in-memory stand-ins for object storage, Qdrant and the AI service.

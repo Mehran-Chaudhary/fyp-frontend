@@ -1,6 +1,7 @@
 import { useMutation } from '@tanstack/react-query';
 import { workspaceApi } from '@/lib/api/endpoints';
 import type { UpdateOrganizationRequest } from '@/lib/api/types';
+import { invalidateKnowledgeAccess } from '@/lib/knowledge/cache';
 import { queryKeys } from '@/lib/queries';
 import { queryClient } from '@/lib/query-client';
 import { useWorkspace } from '@/features/workspaces/workspace-context';
@@ -19,6 +20,8 @@ export function useUpdateWorkspace() {
         void queryClient.invalidateQueries({ queryKey: queryKeys.me });
         void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces });
       }
+      // Chunking defaults show as "inherited" values in the knowledge-base form (Phase 3 §10.4).
+      if (body.settings !== undefined) void invalidateKnowledgeAccess(workspace.id);
     },
   });
 }
