@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { API_BASE_URL } from '@/lib/env';
 
 type TokenManager = typeof import('./token-manager');
 type Client = typeof import('./client');
@@ -158,7 +159,7 @@ describe('API client', () => {
     await client.call(path, scope);
 
     const [url, init] = fetchMock.mock.calls[0];
-    expect(urlOf(url)).toBe('/api/v1/organizations/79b7a713-eaa2-47c0-b9d5-11e738780fe4/members/me');
+    expect(urlOf(url)).toBe(`${API_BASE_URL}/organizations/79b7a713-eaa2-47c0-b9d5-11e738780fe4/members/me`);
     expect((init?.headers as Record<string, string>)['X-Organization-Id']).toBe('79b7a713-eaa2-47c0-b9d5-11e738780fe4');
     expect(init?.credentials).toBe('include');
   });

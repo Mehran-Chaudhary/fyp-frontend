@@ -28,22 +28,34 @@ University Islamabad). This repository implements:
 
 ```bash
 npm install
-npm run dev          # http://localhost:5173 (the port is fixed: backend emails link to it)
+# Copy .env.example to .env before starting (PowerShell: Copy-Item .env.example .env).
+npm run dev -- --port 5173 --strictPort
 ```
 
-The dev server proxies `/api` and `/health` to the backend **without rewriting the
-path**, so the `daiap_rt` refresh cookie (scoped to `/api/v1/auth`) stays first-party.
-Set `BACKEND_URL` if the backend is not on `http://localhost:3000`.
+Open `http://localhost:5173`. The local `.env` sends API requests directly to
+`http://localhost:3000/api/v1`. Use `localhost` consistently, including in the
+browser; restart Vite after changing environment files. `.env.development` must
+not override this URL. All `VITE_` values are public: never copy backend secrets.
 
-For development, raise the backend's auth throttle so page reloads don't exhaust it
-(spec §13): `THROTTLE_AUTH_LIMIT=200`, and use `MAIL_TRANSPORT=log` to read emailed
-links (verify email, reset password) from the backend console.
+The backend must allow origin `http://localhost:5173` with credentials and use its
+local HTTP cookie settings (`COOKIE_SECURE=false`, `COOKIE_SAME_SITE=lax`, refresh
+cookie enabled, no cookie domain). Backend email currently uses Ethereal; check
+its test inbox for verification, reset, and invitation messages.
+
+Check `http://localhost:3000/health/ready` and `http://localhost:3000/docs`, then
+sign in and confirm API requests target port 3000. Confirm login sets the HttpOnly
+refresh cookie, `/auth/me` succeeds, reloading restores the session through
+`POST /auth/refresh`, and logout ends it. Then test workspace creation, document
+upload, processing, and retrieval. Chat and workflow runs require their frontend
+features to be implemented. There is currently no Socket.IO client; when added,
+connect to `http://localhost:3000` with `path: '/realtime'` and
+`transports: ['websocket']` (the path is not a namespace).
 
 ### Environment
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `VITE_API_BASE_URL` | `/api/v1` | API prefix. Keep it relative; production serves the API from the same site. |
+| `VITE_API_BASE_URL` | `/api/v1` fallback | Local `.env`: `http://localhost:3000/api/v1`. For production, set the deployed API URL or `/api/v1` in `.env.production` or the build environment to override local `.env`. |
 | `VITE_APP_NAME` | `AgentVault` | Product name in the UI |
 | `VITE_QUERY_DEVTOOLS` | unset | `true` shows TanStack Query devtools in development |
 | `BACKEND_URL` | `http://localhost:3000` | Dev/preview proxy target (never sent to the browser) |

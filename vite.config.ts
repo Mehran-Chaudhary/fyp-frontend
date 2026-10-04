@@ -7,9 +7,8 @@ import { defineConfig, loadEnv } from 'vite';
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  // Where the NestJS backend listens in development. The browser never sees this
-  // address: it calls /api on its own origin and the dev server forwards it, which
-  // keeps the SameSite=Lax refresh cookie first-party (spec §2.4, §3.9).
+  // Optional proxy for relative API URLs. Local .env uses an absolute API URL,
+  // so browser requests go directly to the backend and exercise its CORS policy.
   const backend = env.BACKEND_URL || 'http://localhost:3000';
 
   return {
