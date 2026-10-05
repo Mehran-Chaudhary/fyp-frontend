@@ -250,7 +250,8 @@ export const router = createBrowserRouter([
                     // The members list stays mounted under the member drawer.
                     lazy: () => import('@/features/team/members-page').then((m) => ({ Component: m.MembersPage })),
                     children: [
-                      { index: true },
+                      // No member open: the drawer's outlet renders nothing.
+                      { index: true, Component: () => null },
                       {
                         path: 'members/:memberId',
                         lazy: () => import('@/features/team/member-drawer').then((m) => ({ Component: m.MemberDrawer })),

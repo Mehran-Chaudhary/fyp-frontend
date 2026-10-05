@@ -46,7 +46,7 @@ function DangerZone({ organization }: { organization: Organization }) {
   const canDelete = isOwner && can('workspace:delete');
 
   return (
-    <div className="grid gap-6">
+    <div className="grid grid-cols-1 gap-6">
       {!isOwner ? (
         <Callout tone="neutral" icon={<Info className="size-4" />} title="Only the owner can do these">
           Transferring ownership and deleting {organization.name} need the workspace's actual owner, whatever roles

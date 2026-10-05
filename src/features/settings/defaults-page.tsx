@@ -32,7 +32,7 @@ export function DefaultsSettingsPage() {
       {(organization) => {
         const settings = organization.settings;
         return (
-          <div className="grid gap-6">
+          <div className="grid grid-cols-1 gap-6">
             {/* Keyed by the stored values: a save elsewhere resets the untouched form. */}
             <ProcessingCard
               key={`chunks:${settings.defaultChunkSize ?? 'inherit'}:${settings.defaultChunkOverlap ?? 'inherit'}`}

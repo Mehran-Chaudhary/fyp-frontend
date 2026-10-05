@@ -34,7 +34,7 @@ export function MyWorkspaceProfilePage() {
   const membership = workspace.membership;
 
   return (
-    <div className="grid gap-6">
+    <div className="grid grid-cols-1 gap-6">
       <PageHeader
         title="Your workspace profile"
         description={`How you appear in ${workspace.name}, and your membership of it. Your account profile is separate.`}

@@ -43,7 +43,7 @@ export function TeamLayout() {
   const count = details.data?.memberCount;
 
   return (
-    <div className="grid gap-6">
+    <div className="grid grid-cols-1 gap-6">
       <PageHeader
         title="Team"
         description={

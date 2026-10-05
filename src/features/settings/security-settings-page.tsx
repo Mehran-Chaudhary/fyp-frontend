@@ -34,7 +34,7 @@ export function SecuritySettingsPage() {
       {(organization) => {
         const domains = organization.settings.allowedEmailDomains ?? [];
         return (
-          <div className="grid gap-6">
+          <div className="grid grid-cols-1 gap-6">
             <RequirementsCard organization={organization} />
             <DomainsCard key={`domains:${domains.join(',')}`} organization={organization} />
             {can('security:read') ? (

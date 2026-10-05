@@ -37,7 +37,7 @@ export function WorkspaceDetailsGate({
   }
   if (details.isPending) {
     return (
-      <div className="grid gap-6" aria-busy="true">
+      <div className="grid grid-cols-1 gap-6" aria-busy="true">
         {skeleton.map((height, index) => (
           <div key={index} className="rounded-xl border border-line bg-surface p-6 shadow-card">
             <Skeleton className="h-4 w-40" />

@@ -13,7 +13,7 @@ export function SettingsLayout() {
   const tabs = settingsTabs(`/w/${workspace.slug}/settings`, can);
 
   return (
-    <div className="grid gap-6">
+    <div className="grid grid-cols-1 gap-6">
       <PageHeader
         title="Settings"
         description={`The profile, defaults, security policy and machine access of ${workspace.name}.`}

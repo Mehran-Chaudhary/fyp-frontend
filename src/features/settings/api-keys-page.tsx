@@ -109,7 +109,7 @@ function ApiKeys() {
     : [];
 
   return (
-    <div className="grid gap-6">
+    <div className="grid grid-cols-1 gap-6">
       {lost ? (
         <OutcomeUnknown
           title={`We couldn't confirm whether “${lost.name}” was created`}

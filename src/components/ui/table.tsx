@@ -2,10 +2,14 @@ import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react';
 import type { ComponentProps, ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 
-/** Data tables: dense rows, a quiet header, horizontal scroll on small screens. */
+/**
+ * Data tables: dense rows, a quiet header, horizontal scroll on small screens.
+ * The wrapper is positioned so absolutely positioned content (sr-only labels in
+ * scrolled-off columns) stays inside the scroll area instead of widening the page.
+ */
 export function Table({ className, wrapperClassName, ...props }: ComponentProps<'table'> & { wrapperClassName?: string }) {
   return (
-    <div className={cn('scrollbar-thin w-full overflow-x-auto', wrapperClassName)}>
+    <div className={cn('scrollbar-thin relative w-full overflow-x-auto', wrapperClassName)}>
       <table className={cn('w-full border-collapse text-left text-[13px]', className)} {...props} />
     </div>
   );

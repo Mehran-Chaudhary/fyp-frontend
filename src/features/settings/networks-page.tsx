@@ -161,7 +161,7 @@ function Networks() {
   const switchId = useId();
 
   return (
-    <div className="grid gap-6">
+    <div className="grid grid-cols-1 gap-6">
       <Card>
         <CardHeader
           icon={<Network />}
