@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { Activity, ArrowLeftRight, ChevronDown, KeyRound, LogOut, MailWarning, ShieldCheck, UserRound } from 'lucide-react';
+import { Activity, ArrowLeftRight, ChevronDown, IdCard, KeyRound, LogOut, MailWarning, ShieldCheck, UserRound } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { Badge } from '@/components/ui/badge';
@@ -18,6 +18,7 @@ import { useCountdown } from '@/lib/hooks';
 import { meQuery } from '@/lib/queries';
 import { toastError } from '@/lib/toast';
 import { cn, formatCountdown } from '@/lib/utils';
+import { useOptionalWorkspace } from '@/features/workspaces/workspace-context';
 
 /** The sticky bar at the top of every signed-in page. */
 export function TopBar({ children, className }: { children?: ReactNode; className?: string }) {
@@ -34,9 +35,10 @@ export function TopBar({ children, className }: { children?: ReactNode; classNam
   );
 }
 
-/** Avatar menu: account, security, switch workspace, service status, sign out. */
+/** Avatar menu: workspace profile, account, security, switch workspace, service status, sign out. */
 export function UserMenu() {
   const { data: me } = useQuery(meQuery);
+  const workspace = useOptionalWorkspace();
   const [signingOut, setSigningOut] = useState(false);
   if (!me) return null;
 
@@ -70,6 +72,14 @@ export function UserMenu() {
           </div>
         ) : null}
         <DropdownMenuSeparator />
+        {workspace?.membership ? (
+          <DropdownMenuItem asChild>
+            <Link to={`/w/${workspace.slug}/my-workspace-profile`}>
+              <IdCard />
+              <span className="min-w-0 truncate">Your profile in {workspace.name}</span>
+            </Link>
+          </DropdownMenuItem>
+        ) : null}
         <DropdownMenuItem asChild>
           <Link to="/account/profile">
             <UserRound />

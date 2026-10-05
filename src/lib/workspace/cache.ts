@@ -56,7 +56,19 @@ export async function invalidateRoles(workspaceId: string): Promise<void> {
   await refreshMyAccess(workspaceId);
 }
 
-/** E34–E36 */
+/**
+ * P2-API-01 that touched an access policy (MFA, verified email, domains) or
+ * P2-API-07: the switcher and your own contextual access are re-read (spec §8).
+ */
+export function invalidateAfterPolicyChange(workspaceId: string): Promise<unknown> {
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: queryKeys.workspaces }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.context(workspaceId) }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.membership(workspaceId) }),
+  ]);
+}
+
+/** P2-API-04–07 */
 export function invalidateIpRules(workspaceId: string): Promise<unknown> {
   return Promise.all([
     queryClient.invalidateQueries({ queryKey: queryKeys.ipRules(workspaceId) }),
@@ -89,6 +101,8 @@ export async function invalidateAfterTransfer(workspaceId: string): Promise<void
 export async function forgetWorkspace(workspaceId: string): Promise<void> {
   const userId = queryClient.getQueryData(meQuery.queryKey)?.id;
   if (userId) lastWorkspace.clear(userId, workspaceId);
+  // Cancel first, so a late answer can't repopulate the evicted tenant (spec §8).
+  await queryClient.cancelQueries({ queryKey: queryKeys.ws(workspaceId) });
   queryClient.removeQueries({ queryKey: queryKeys.ws(workspaceId) });
   queryClient.removeQueries({ queryKey: ['workspace-ref'] });
   clearWorkspaceBlock(workspaceId);

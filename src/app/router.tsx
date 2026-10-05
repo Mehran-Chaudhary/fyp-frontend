@@ -241,7 +241,7 @@ export const router = createBrowserRouter([
                 lazy: () => import('@/features/knowledge/search/search-page').then((m) => ({ Component: m.SearchPage })),
               },
 
-              // ── Team (Phase 2 §5.1–§5.6) ──
+              // ── Team (Phase 2 §4) ──
               {
                 path: 'team',
                 lazy: () => import('@/features/team/team-layout').then((m) => ({ Component: m.TeamLayout })),
@@ -274,7 +274,16 @@ export const router = createBrowserRouter([
                   import('@/features/team/role-editor-page').then((m) => ({ Component: m.RoleEditorPage })),
               })),
 
-              // ── Settings (Phase 2 §5.7–§5.9) ──
+              // ── Your own membership (Phase 2 §4): no admin permission needed ──
+              {
+                path: 'my-workspace-profile',
+                lazy: () =>
+                  import('@/features/team/my-workspace-profile-page').then((m) => ({
+                    Component: m.MyWorkspaceProfilePage,
+                  })),
+              },
+
+              // ── Settings (Phase 2 §4) ──
               {
                 path: 'settings',
                 lazy: () =>
@@ -282,8 +291,17 @@ export const router = createBrowserRouter([
                 children: [
                   {
                     index: true,
+                    lazy: () => import('@/features/settings/settings-layout').then((m) => ({ Component: m.SettingsIndex })),
+                  },
+                  {
+                    path: 'general',
                     lazy: () =>
                       import('@/features/settings/general-page').then((m) => ({ Component: m.GeneralSettingsPage })),
+                  },
+                  {
+                    path: 'defaults',
+                    lazy: () =>
+                      import('@/features/settings/defaults-page').then((m) => ({ Component: m.DefaultsSettingsPage })),
                   },
                   {
                     path: 'security',
@@ -293,8 +311,17 @@ export const router = createBrowserRouter([
                       })),
                   },
                   {
+                    path: 'networks',
+                    lazy: () =>
+                      import('@/features/settings/networks-page').then((m) => ({ Component: m.NetworksSettingsPage })),
+                  },
+                  {
                     path: 'api-keys',
                     lazy: () => import('@/features/settings/api-keys-page').then((m) => ({ Component: m.ApiKeysPage })),
+                  },
+                  {
+                    path: 'danger',
+                    lazy: () => import('@/features/settings/danger-page').then((m) => ({ Component: m.DangerZonePage })),
                   },
                 ],
               },

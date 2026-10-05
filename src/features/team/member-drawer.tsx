@@ -1,39 +1,33 @@
-import { zodResolver } from '@hookform/resolvers/zod';
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { ArrowRight, Info, KeyRound, Pencil, RotateCcw, UserMinus, UserRoundX, UserX } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import { ArrowRight, Info, KeyRound, KeySquare, Pencil, RotateCcw, UserMinus, UserRoundX, UserX } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
-import { useForm } from 'react-hook-form';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
-import { z } from 'zod';
 import { EmptyState, ErrorState } from '@/components/feedback/states';
 import { Button } from '@/components/ui/button';
 import { Callout } from '@/components/ui/callout';
 import { DetailRow } from '@/components/ui/card';
 import { Drawer, DrawerSection } from '@/components/ui/drawer';
-import { Field, FormError } from '@/components/ui/field';
-import { Input } from '@/components/ui/input';
 import { Avatar, Skeleton } from '@/components/ui/misc';
 import { RelativeTime } from '@/components/ui/relative-time';
 import { Tooltip } from '@/components/ui/tooltip';
 import { useDialogTarget } from '@/components/ui/use-dialog-target';
-import { membersApi } from '@/lib/api/endpoints';
 import { hasCode } from '@/lib/api/errors';
-import type { Member, UpdateMemberProfileRequest } from '@/lib/api/types';
-import { applyServerErrors } from '@/lib/errors';
-import { memberQuery, queryKeys } from '@/lib/queries';
-import { queryClient } from '@/lib/query-client';
-import { toast } from '@/lib/toast';
+import type { Member } from '@/lib/api/types';
+import { memberQuery } from '@/lib/queries';
 import { formatDate } from '@/lib/utils';
 import { useAccess } from '@/features/workspaces/use-access';
 import { useCan, useWorkspace } from '@/features/workspaces/workspace-context';
 import { RemoveMemberDialog, SuspendMemberDialog } from './member-actions';
 import { MemberStatusBadge, OwnerBadge, RoleChips } from './member-bits';
-import { findCachedMember, handleMemberGone, isUuid, memberActionMessage, storeMember, useReactivateMember } from './member-helpers';
+import { findCachedMember, isUuid, useReactivateMember } from './member-helpers';
+import { MemberProfileForm } from './member-profile-form';
 import { MemberRolesEditor } from './member-roles-editor';
 
 /**
- * Member detail (spec §5.2): a drawer over the Members list with its own URL
- * (/team/members/:memberId), so it can be linked to and the list keeps its filters.
+ * Member detail (P2-API-09): a drawer over the Members list with its own URL
+ * (/team/members/:memberId, the MEMBERSHIP id), so it can be linked to and the
+ * list keeps its filters. Removed members open read-only. Actions wait for the
+ * fresh detail: a stale list row never decides what is offered.
  */
 export function MemberDrawer() {
   const { memberId = '' } = useParams();
@@ -81,8 +75,7 @@ export function MemberDrawer() {
           }
         />
       ) : member ? (
-        // Keyed so an update from the server resets the editors cleanly.
-        <MemberDetail key={member.id} member={member} startWithRoles={focusRoles} onClose={close} />
+        <MemberDetail key={member.id} member={member} fresh={!query.isPlaceholderData} startWithRoles={focusRoles} onClose={close} />
       ) : query.isError ? (
         <ErrorState error={query.error} title="We couldn't load this member" onRetry={() => void query.refetch()} retrying={query.isFetching} />
       ) : (
@@ -115,21 +108,34 @@ function DrawerHeader({ member }: { member: Member }) {
   );
 }
 
-function MemberDetail({ member, startWithRoles, onClose }: { member: Member; startWithRoles: boolean; onClose: () => void }) {
+function MemberDetail({
+  member,
+  fresh,
+  startWithRoles,
+  onClose,
+}: {
+  member: Member;
+  /** False while only the list's copy is shown: no actions until the detail has loaded. */
+  fresh: boolean;
+  startWithRoles: boolean;
+  onClose: () => void;
+}) {
   const workspace = useWorkspace();
   const can = useCan();
   const access = useAccess();
   const isYou = member.id === access.membership?.id;
   const removed = member.status === 'REMOVED';
-  const manageable = !removed && access.canActOn(member);
+  const manageable = fresh && !removed && access.canActOn(member);
 
-  const canEditProfile = !removed && (isYou || (can('member:update') && manageable));
+  const canEditProfile = fresh && !removed && (isYou || (can('member:update') && manageable));
   const canAssign = manageable && can('role:assign');
   const canStatus = manageable && can('member:update');
   const canRemove = manageable && can('member:remove');
   const hasAdminPowers = can.any('member:update', 'member:remove', 'role:assign');
 
-  const [editing, setEditing] = useState<'profile' | 'roles' | null>(startWithRoles && canAssign ? 'roles' : null);
+  // "Change roles…" from a row may open this before the fresh detail arrives: the editor shows once it may.
+  const [editing, setEditing] = useState<'profile' | 'roles' | null>(startWithRoles ? 'roles' : null);
+  const showing = editing === 'roles' && !canAssign ? null : editing === 'profile' && !canEditProfile ? null : editing;
   const suspendDialog = useDialogTarget<Member>();
   const removeDialog = useDialogTarget<Member>();
   const reactivate = useReactivateMember({ onGone: onClose });
@@ -140,13 +146,15 @@ function MemberDetail({ member, startWithRoles, onClose }: { member: Member; sta
   if (removed) {
     notice = (
       <Callout tone="neutral" title="No longer a member">
-        {firstName} left or was removed from {workspace.name}. This record is read-only; you can invite them again.
+        {firstName} left or was removed from {workspace.name}. This record is kept for reference and is read-only; to
+        bring them back, send a new invitation.
       </Callout>
     );
   } else if (member.status === 'SUSPENDED') {
     notice = (
       <Callout tone="warning" title="Suspended">
-        {firstName} can't open {workspace.name} until someone reactivates them. Their roles are kept.
+        {firstName}'s membership doesn't work until someone reactivates it. Their roles are kept, and API keys they
+        created keep working unless revoked.
       </Callout>
     );
   }
@@ -177,7 +185,7 @@ function MemberDetail({ member, startWithRoles, onClose }: { member: Member; sta
         title="Profile"
         description={isYou ? 'How you appear in this workspace.' : undefined}
         actions={
-          canEditProfile && editing !== 'profile' ? (
+          canEditProfile && showing !== 'profile' ? (
             <Button variant="ghost" size="xs" onClick={() => setEditing('profile')}>
               <Pencil />
               Edit
@@ -185,8 +193,8 @@ function MemberDetail({ member, startWithRoles, onClose }: { member: Member; sta
           ) : null
         }
       >
-        {editing === 'profile' ? (
-          <ProfileForm member={member} isYou={isYou} onDone={() => setEditing(null)} onGone={onClose} />
+        {showing === 'profile' ? (
+          <MemberProfileForm member={member} isYou={isYou} onDone={() => setEditing(null)} onGone={onClose} />
         ) : (
           <dl className="divide-y divide-line/70">
             <DetailRow label="Display name">{member.displayName}</DetailRow>
@@ -213,9 +221,9 @@ function MemberDetail({ member, startWithRoles, onClose }: { member: Member; sta
 
       <DrawerSection
         title="Roles"
-        description={editing === 'roles' ? 'Roles you can grant are selectable. Saving replaces the member’s roles.' : undefined}
+        description={showing === 'roles' ? 'Roles you can grant are selectable. Saving replaces the member’s roles.' : undefined}
         actions={
-          canAssign && editing !== 'roles' ? (
+          canAssign && showing !== 'roles' ? (
             <Button variant="ghost" size="xs" onClick={() => setEditing('roles')}>
               <KeyRound />
               Change
@@ -223,7 +231,7 @@ function MemberDetail({ member, startWithRoles, onClose }: { member: Member; sta
           ) : null
         }
       >
-        {editing === 'roles' ? (
+        {showing === 'roles' ? (
           <MemberRolesEditor member={member} onDone={() => setEditing(null)} onGone={onClose} />
         ) : (
           <RoleChips member={member} />
@@ -236,7 +244,7 @@ function MemberDetail({ member, startWithRoles, onClose }: { member: Member; sta
             {canStatus && member.status === 'ACTIVE' ? (
               <ActionRow
                 title="Suspend"
-                description="Blocks access immediately without removing them. The reason you give is shown to them."
+                description="Stops their membership working without removing it. Their roles and API keys are kept."
                 action={
                   <Button variant="secondary" size="sm" onClick={() => suspendDialog.show(member)}>
                     <UserX />
@@ -260,7 +268,7 @@ function MemberDetail({ member, startWithRoles, onClose }: { member: Member; sta
             {canRemove ? (
               <ActionRow
                 title="Remove from workspace"
-                description="Ends the membership and revokes the API keys they created here."
+                description="Ends the membership and revokes every API key they created here. Their account isn't deleted."
                 action={
                   <Button variant="danger-outline" size="sm" onClick={() => removeDialog.show(member)}>
                     <UserMinus />
@@ -273,12 +281,28 @@ function MemberDetail({ member, startWithRoles, onClose }: { member: Member; sta
         </DrawerSection>
       ) : null}
 
-      {isYou && !member.isOwner && can('workspace:read') ? (
+      {!removed && can('apikey:read') ? (
+        <DrawerSection title="Machine access">
+          <Link
+            to={`/w/${workspace.slug}/settings/api-keys?creator=${member.userId}`}
+            className="inline-flex items-center gap-1.5 text-[13px] font-medium text-brand-700 hover:underline hover:underline-offset-4"
+          >
+            <KeySquare className="size-3.5" aria-hidden />
+            API keys {isYou ? 'you' : firstName} created
+            <ArrowRight className="size-3" />
+          </Link>
+        </DrawerSection>
+      ) : null}
+
+      {isYou && !member.isOwner ? (
         <DrawerSection title="Leaving">
           <p className="text-[13px] leading-relaxed text-muted">
             You can leave {workspace.name} from{' '}
-            <Link to={`/w/${workspace.slug}/settings`} className="inline-flex items-center gap-1 font-medium text-brand-700 hover:underline hover:underline-offset-4">
-              Settings
+            <Link
+              to={`/w/${workspace.slug}/my-workspace-profile`}
+              className="inline-flex items-center gap-1 font-medium text-brand-700 hover:underline hover:underline-offset-4"
+            >
+              your workspace profile
               <ArrowRight className="size-3" />
             </Link>
           </p>
@@ -310,94 +334,6 @@ function ActionRow({ title, description, action }: { title: string; description:
       </div>
       <div className="shrink-0">{action}</div>
     </div>
-  );
-}
-
-// ── Profile editing (E39) ───────────────────────────────────────────────────
-
-const profileSchema = z.object({
-  displayName: z.string().trim().max(120, 'Use no more than 120 characters.'),
-  title: z.string().trim().max(120, 'Use no more than 120 characters.'),
-});
-type ProfileValues = z.infer<typeof profileSchema>;
-
-function ProfileForm({
-  member,
-  isYou,
-  onDone,
-  onGone,
-}: {
-  member: Member;
-  isYou: boolean;
-  onDone: () => void;
-  onGone: () => void;
-}) {
-  const workspace = useWorkspace();
-  const fullName = `${member.firstName} ${member.lastName}`.trim();
-  const form = useForm<ProfileValues>({
-    resolver: zodResolver(profileSchema),
-    // An empty display name falls back to the account name.
-    defaultValues: { displayName: member.displayName === fullName ? '' : member.displayName, title: member.title ?? '' },
-  });
-  const { errors, dirtyFields, isDirty } = form.formState;
-
-  const save = useMutation({
-    mutationFn: (body: UpdateMemberProfileRequest) => membersApi.updateProfile(workspace.id, member.id, body),
-    onSuccess: (updated) => {
-      storeMember(workspace.id, updated);
-      if (isYou) void queryClient.invalidateQueries({ queryKey: queryKeys.membership(workspace.id) });
-      toast.success(isYou ? 'Your workspace profile is saved' : `Saved ${updated.displayName}'s profile`);
-      onDone();
-    },
-    onError: (error) => {
-      if (hasCode(error, 'MEMBERSHIP_NOT_FOUND')) {
-        handleMemberGone(workspace.id, member.displayName);
-        onGone();
-        return;
-      }
-      if (hasCode(error, 'FORBIDDEN', 'PERMISSION_DENIED')) {
-        form.setError('root.server', { message: memberActionMessage(error) });
-        return;
-      }
-      applyServerErrors(form, error, { fields: ['displayName', 'title'] });
-    },
-  });
-
-  const onSubmit = form.handleSubmit((values) => {
-    // Only what changed; '' clears the field.
-    const body: UpdateMemberProfileRequest = {};
-    if (dirtyFields.displayName) body.displayName = values.displayName;
-    if (dirtyFields.title) body.title = values.title;
-    if (Object.keys(body).length === 0) {
-      onDone();
-      return;
-    }
-    save.mutate(body);
-  });
-
-  return (
-    <form onSubmit={onSubmit} noValidate className="grid gap-4">
-      <Field
-        label="Display name"
-        optional
-        error={errors.displayName?.message}
-        hint={`Shown in this workspace only. Leave empty to use ${fullName || 'the account name'}.`}
-      >
-        <Input autoFocus maxLength={120} placeholder={fullName} {...form.register('displayName')} />
-      </Field>
-      <Field label="Title" optional error={errors.title?.message} hint="For example “Head of People”. Leave empty to clear.">
-        <Input maxLength={120} placeholder="Job title" {...form.register('title')} />
-      </Field>
-      <FormError message={errors.root?.server?.message} />
-      <div className="flex justify-end gap-2">
-        <Button variant="ghost" size="sm" onClick={onDone} disabled={save.isPending}>
-          Cancel
-        </Button>
-        <Button type="submit" size="sm" disabled={!isDirty} loading={save.isPending}>
-          Save profile
-        </Button>
-      </div>
-    </form>
   );
 }
 

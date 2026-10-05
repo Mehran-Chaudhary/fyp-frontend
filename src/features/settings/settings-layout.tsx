@@ -1,32 +1,22 @@
-import { KeySquare, Settings2, ShieldCheck } from 'lucide-react';
-import { Outlet } from 'react-router';
+import { Navigate, Outlet } from 'react-router';
 import { NoAccessState } from '@/components/feedback/no-access';
 import { PageHeader } from '@/components/feedback/states';
 import { Card } from '@/components/ui/card';
-import { TabNav, type TabNavItem } from '@/components/ui/tab-nav';
+import { TabNav } from '@/components/ui/tab-nav';
 import { useCan, useWorkspace } from '@/features/workspaces/workspace-context';
+import { settingsTabs } from './settings-tabs';
 
-/**
- * Settings: General, Security and API keys (spec §4). Each tab checks its own
- * permission, so someone with only apikey:read still reaches API keys.
- */
+/** Settings: one header and tab bar over the workspace's administration pages (spec §4). */
 export function SettingsLayout() {
   const workspace = useWorkspace();
   const can = useCan();
-  const base = `/w/${workspace.slug}/settings`;
-
-  const tabs: TabNavItem[] = [];
-  if (can('workspace:read')) {
-    tabs.push({ to: base, label: 'General', icon: Settings2, isActive: (path) => path === base });
-    tabs.push({ to: `${base}/security`, label: 'Security', icon: ShieldCheck });
-  }
-  if (can('apikey:read')) tabs.push({ to: `${base}/api-keys`, label: 'API keys', icon: KeySquare });
+  const tabs = settingsTabs(`/w/${workspace.slug}/settings`, can);
 
   return (
     <div className="grid gap-6">
       <PageHeader
         title="Settings"
-        description={`The profile, security policy and machine access of ${workspace.name}.`}
+        description={`The profile, defaults, security policy and machine access of ${workspace.name}.`}
       />
       {tabs.length > 0 ? (
         <>
@@ -35,9 +25,17 @@ export function SettingsLayout() {
         </>
       ) : (
         <Card>
-          <NoAccessState permissions={['workspace:read', 'apikey:read']} workspaceName={workspace.name} />
+          <NoAccessState permissions={['workspace:read', 'security:read', 'apikey:read']} workspaceName={workspace.name} />
         </Card>
       )}
     </div>
   );
+}
+
+/** /settings opens the first tab this member can see. */
+export function SettingsIndex() {
+  const workspace = useWorkspace();
+  const can = useCan();
+  const first = settingsTabs(`/w/${workspace.slug}/settings`, can)[0];
+  return first ? <Navigate to={first.to} replace /> : null;
 }

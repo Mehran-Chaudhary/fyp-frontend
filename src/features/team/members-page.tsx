@@ -5,6 +5,7 @@ import {
   Eye,
   KeyRound,
   MoreHorizontal,
+  RefreshCw,
   RotateCcw,
   Search,
   UserMinus,
@@ -73,7 +74,11 @@ const STATUS_OPTIONS: Array<{ value: MemberStatusFilter; label: string }> = [
 
 const COLUMNS = 7;
 
-/** Team → Members (spec §5.1, E37). The member drawer renders over it as a child route. */
+/**
+ * Team → Members (P2-API-08). Filters live in the URL (never secrets), search is
+ * debounced and outdated requests are cancelled, and the member drawer renders
+ * over the list as a child route so the filters survive opening a member.
+ */
 export function MembersPage() {
   const workspace = useWorkspace();
   const can = useCan();
@@ -160,6 +165,15 @@ function MembersList() {
   const items = query.data?.items ?? [];
   const filtered = hasActiveFilters(filters);
 
+  // The last row on a later page went away (removed, filtered out): step back to a page that has rows.
+  const lastPage = query.data?.pagination.totalPages ?? 1;
+  const overshot = !!query.data && !query.isPlaceholderData && items.length === 0 && filters.page > 1;
+  useEffect(() => {
+    if (overshot) {
+      setParams((previous) => writeMemberFilters(previous, { page: Math.max(1, lastPage) }), { replace: true, preventScrollReset: true });
+    }
+  }, [overshot, lastPage, setParams]);
+
   return (
     <>
       <Card className="overflow-hidden">
@@ -204,6 +218,17 @@ function MembersList() {
             ) : null}
           </div>
           <div className="flex items-center gap-1.5 lg:ml-auto">
+            <Tooltip content="Refresh">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="size-9 text-muted"
+                onClick={() => void query.refetch()}
+                aria-label="Refresh the member list"
+              >
+                <RefreshCw className={cn(query.isFetching && !query.isPending && 'animate-spin')} />
+              </Button>
+            </Tooltip>
             <Select
               size="sm"
               aria-label="Sort by"
@@ -291,8 +316,12 @@ function MembersList() {
                   ) : (
                     <EmptyState
                       icon={<Users />}
-                      title="No members yet"
-                      description="Invite colleagues by email and give each of them a role."
+                      title="No members to show"
+                      description={
+                        can('member:invite')
+                          ? 'Invite colleagues by email and give each of them a role.'
+                          : 'Nobody else is active or suspended in this workspace.'
+                      }
                       action={
                         can('member:invite') ? (
                           <Button size="sm" onClick={() => setInviteOpen(true)}>

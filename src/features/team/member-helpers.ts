@@ -1,6 +1,6 @@
 import { useMutation } from '@tanstack/react-query';
 import { membersApi } from '@/lib/api/endpoints';
-import { hasCode, isApiError } from '@/lib/api/errors';
+import { hasCode, isApiError, isOutcomeUnknown } from '@/lib/api/errors';
 import type { Member } from '@/lib/api/types';
 import { messageFor } from '@/lib/errors';
 import { queryKeys } from '@/lib/queries';
@@ -49,19 +49,30 @@ export function findCachedMember(workspaceId: string, memberId: string): Member 
   return undefined;
 }
 
-/** Reactivate (E42): not destructive, so no confirmation. */
+/**
+ * Reactivate (P2-API-13): suspended → active with the same roles. Restores
+ * access rather than removing it, so it needs no confirmation. Not an undelete.
+ */
 export function useReactivateMember(options: { onGone?: () => void } = {}) {
   const workspace = useWorkspace();
+  const workspaceId = workspace.id;
   return useMutation({
-    mutationFn: (target: Member) => membersApi.reactivate(workspace.id, target.id),
+    mutationFn: (target: Member) => membersApi.reactivate(workspaceId, target.id),
     onSuccess: (updated) => {
-      storeMember(workspace.id, updated);
-      toast.success(`${updated.displayName} is active again`, { description: 'Their access is restored.' });
+      storeMember(workspaceId, updated);
+      toast.success(`${updated.displayName} is active again`, { description: 'Their membership works again, with the same roles.' });
     },
     onError: (error, target) => {
       if (hasCode(error, 'MEMBERSHIP_NOT_FOUND')) {
-        handleMemberGone(workspace.id, target.displayName);
+        handleMemberGone(workspaceId, target.displayName);
         options.onGone?.();
+        return;
+      }
+      if (isOutcomeUnknown(error)) {
+        void invalidateMembers(workspaceId);
+        toast.warning(`We couldn't confirm whether ${target.displayName} was reactivated`, {
+          description: 'The list is being refreshed. Check their status before trying again.',
+        });
         return;
       }
       toastError(error, "Couldn't reactivate");

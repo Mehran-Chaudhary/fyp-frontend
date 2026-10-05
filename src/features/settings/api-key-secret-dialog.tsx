@@ -11,10 +11,18 @@ import { API_BASE_URL } from '@/lib/env';
 import { downloadTextFile, formatDate, formatDateTime } from '@/lib/utils';
 import { useWorkspace } from '@/features/workspaces/workspace-context';
 
+/** A read-only endpoint a key with these scopes may call, for the example request. */
+const EXAMPLES: Array<{ scope: string; path: string }> = [
+  { scope: 'knowledgebase:read', path: '/knowledge-bases' },
+  { scope: 'document:read', path: '/documents' },
+  { scope: 'agent:read', path: '/agents' },
+];
+
 /**
- * Shows a new key's secret exactly once (spec §5.9). It can't be closed until
- * the user confirms they stored it; the secret lives only in the parent's state
- * and is dropped when this closes.
+ * Shows a new key's secret exactly once (spec P2-API-29). It can't be dismissed
+ * until the user confirms they stored it; the secret lives only in the parent's
+ * component state and is dropped on close, navigation, workspace switch or
+ * sign-out (each unmounts the parent). Copying happens on click only.
  */
 export function ApiKeySecretDialog({ created, onDone }: { created: CreatedApiKey | null; onDone: () => void }) {
   return (
@@ -34,9 +42,13 @@ export function ApiKeySecretDialog({ created, onDone }: { created: CreatedApiKey
 function SecretBody({ created, onDone }: { created: CreatedApiKey; onDone: () => void }) {
   const workspace = useWorkspace();
   const [stored, setStored] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   const { apiKey, plaintextKey, warning } = created;
-  const endpoint = `${window.location.origin}${API_BASE_URL}/organizations/${workspace.id}/agents`;
-  const example = `curl -H "X-API-Key: ${plaintextKey}" \\\n  ${endpoint}`;
+  const example = EXAMPLES.find((candidate) => apiKey.scopes.includes(candidate.scope));
+  const base = API_BASE_URL.startsWith('http') ? API_BASE_URL : `${window.location.origin}${API_BASE_URL}`;
+  const curl = example
+    ? `curl -H "X-API-Key: ${plaintextKey}" \\\n  ${base}/organizations/${workspace.id}${example.path}`
+    : null;
 
   const download = () => {
     const safeName = apiKey.name.replace(/[^a-z0-9-_]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'api-key';
@@ -48,7 +60,7 @@ function SecretBody({ created, onDone }: { created: CreatedApiKey; onDone: () =>
         `Workspace:  ${workspace.name} (${workspace.id})`,
         `Name:       ${apiKey.name}`,
         `Created:    ${formatDateTime(apiKey.createdAt)}`,
-        `Expires:    ${apiKey.expiresAt ? formatDateTime(apiKey.expiresAt) : 'never'}`,
+        `Expires:    ${apiKey.expiresAt ? formatDateTime(apiKey.expiresAt) : 'no expiry'}`,
         `Scopes:     ${apiKey.scopes.join(', ')}`,
         `Networks:   ${apiKey.allowedIps.length ? apiKey.allowedIps.join(', ') : 'any'}`,
         '',
@@ -78,20 +90,26 @@ function SecretBody({ created, onDone }: { created: CreatedApiKey; onDone: () =>
             {plaintextKey}
           </p>
           <div className="flex flex-wrap gap-2 border-t border-brand-200 bg-surface/70 px-3.5 py-2.5">
-            <CopyButton value={plaintextKey} label="Copy key" variant="primary" size="sm" />
+            <CopyButton value={plaintextKey} label="Copy key" variant="primary" size="sm" onCopyResult={(ok) => setCopyFailed(!ok)} />
             <Button variant="secondary" size="sm" onClick={download}>
               <Download />
               Download .txt
             </Button>
           </div>
         </div>
+        {copyFailed ? (
+          <Callout tone="warning" role="alert">
+            This browser didn't allow copying. Select the key above (one click selects all of it) and copy it by hand, or
+            download it. It stays on screen until you confirm below.
+          </Callout>
+        ) : null}
 
-        <CodeBlock code={example} label="Try it" />
+        {curl ? <CodeBlock code={curl} label="Try it" /> : null}
 
         <ul className="grid gap-1.5 text-[13px] leading-relaxed text-muted">
           <li>
-            · The key goes in the <code className="font-mono text-[12px] text-ink-soft">X-API-Key</code> header. It is bound
-            to this workspace: the workspace in the URL path is ignored.
+            · Send it in the <code className="font-mono text-[12px] text-ink-soft">X-API-Key</code> header. It only works
+            in this workspace.
           </li>
           <li>
             · Scopes: <span className="font-mono text-[12px] text-ink-soft">{apiKey.scopes.join(', ')}</span>.
@@ -103,11 +121,14 @@ function SecretBody({ created, onDone }: { created: CreatedApiKey; onDone: () =>
               <code className="font-mono text-[12px]">IP_NOT_ALLOWED</code>.
             </li>
           ) : null}
-          <li>· If you leave or are removed from the workspace, every key you created is revoked.</li>
+          <li>
+            · If you leave or are removed from the workspace, keys you created are revoked. Suspension or a role change
+            doesn't narrow or revoke them: revoke a key yourself when it should stop.
+          </li>
         </ul>
       </DialogBody>
       <DialogFooter className="sm:justify-between">
-        <Checkbox checked={stored} onCheckedChange={setStored} label="I've stored this key somewhere safe" />
+        <Checkbox checked={stored} onCheckedChange={setStored} label="I have saved this key" />
         <Button onClick={onDone} disabled={!stored}>
           Done
         </Button>

@@ -183,20 +183,23 @@ export const organizationsApi = {
 };
 
 export const permissionsApi = {
-  /** E28. 64 permissions; cached for the whole session. */
-  catalogue: () => call<PermissionCatalogue>('/permissions'),
+  /** P2-API-20. Bearer only, no workspace header. `key` is canonical; `action` is truncated for multi-colon keys. */
+  catalogue: (signal?: AbortSignal) => call<PermissionCatalogue>('/permissions', { signal }),
 };
 
 /** Path ids are interpolated into URLs; keep them inert. */
 const id = (value: string) => encodeURIComponent(value);
 
-// ── Phase 2 ─────────────────────────────────────────────────────────────────
+// ── Phase 2 (docs/PHASE_2_WORKSPACE_ADMINISTRATION.md §6, P2-API-nn) ──────────
+// Mutations are never retried automatically: after a timeout or 5xx the change
+// may already have happened, so screens re-read state instead (spec §8, §9).
 
 export const workspaceApi = {
   /**
-   * E30. Send only what changed; `settings` is a partial update (BF-6). The two
-   * access codes below refuse THIS change (your own session or email isn't
-   * verified); they say nothing about your access to the workspace.
+   * P2-API-01. Send only what changed; `settings` is a merge patch: an omitted
+   * key is kept and a `null` key removes that override. The two access codes
+   * refuse THIS change (your own session or email isn't verified); they say
+   * nothing about your access to the workspace.
    */
   update: (workspaceId: string, body: UpdateOrganizationRequest) => {
     const [path, scope] = workspacePath(workspaceId);
@@ -208,37 +211,37 @@ export const workspaceApi = {
     });
   },
 
-  /** E31. Owner only. */
+  /** P2-API-02. Owner only. Soft-deletes the workspace and its memberships; no restore endpoint. */
   remove: (workspaceId: string) => {
     const [path, scope] = workspacePath(workspaceId);
     return call<{ deleted: true }>(path, { ...scope, method: 'DELETE' });
   },
 
-  /** E32. Takes the member's USER id. */
+  /** P2-API-03. Takes the member's USER id. Replaces both parties' role sets. */
   transferOwnership: (workspaceId: string, newOwnerUserId: string) => {
     const [path, scope] = workspacePath(workspaceId, '/transfer-ownership');
     return call<Organization>(path, { ...scope, method: 'POST', body: { newOwnerUserId } });
   },
 
-  /** E33. Newest first, not paginated. */
-  ipRules: (workspaceId: string) => {
+  /** P2-API-04. Newest first, complete, not paginated. */
+  ipRules: (workspaceId: string, signal?: AbortSignal) => {
     const [path, scope] = workspacePath(workspaceId, '/ip-rules');
-    return call<IpRule[]>(path, scope);
+    return call<IpRule[]>(path, { ...scope, signal });
   },
 
-  /** E34 */
+  /** P2-API-05. A new rule is active; adding one does not turn enforcement on. */
   addIpRule: (workspaceId: string, body: CreateIpRuleRequest) => {
     const [path, scope] = workspacePath(workspaceId, '/ip-rules');
     return call<IpRule>(path, { ...scope, method: 'POST', body });
   },
 
-  /** E35 */
+  /** P2-API-06. Hard delete. Refused for the last active rule or one that keeps you in, while enforcing. */
   removeIpRule: (workspaceId: string, ruleId: string) => {
     const [path, scope] = workspacePath(workspaceId, `/ip-rules/${id(ruleId)}`);
     return call<{ removed: true }>(path, { ...scope, method: 'DELETE' });
   },
 
-  /** E36. Takes effect on the very next request. */
+  /** P2-API-07. Takes effect on the very next request. */
   setIpEnforcement: (workspaceId: string, enabled: boolean) => {
     const [path, scope] = workspacePath(workspaceId, '/ip-enforcement');
     return call<Organization>(path, { ...scope, method: 'PUT', body: { enabled } });
@@ -246,75 +249,78 @@ export const workspaceApi = {
 };
 
 export const membersApi = {
-  /** E37. Omitting `status` lists active and suspended members. */
-  list: (workspaceId: string, params: ListMembersParams = {}) => {
+  /** P2-API-08. Omitting `status` lists active and suspended members; REMOVED includes soft-deleted rows. */
+  list: (workspaceId: string, params: ListMembersParams = {}, signal?: AbortSignal) => {
     const [path, scope] = workspacePath(workspaceId, '/members');
-    return callPaginated<Member>(path, { ...scope, query: { ...params } });
+    return callPaginated<Member>(path, { ...scope, query: { ...params }, signal });
   },
 
-  /** E38. Also returns removed members (read-only). */
-  get: (workspaceId: string, memberId: string) => {
+  /** P2-API-09. By MEMBERSHIP id. Also returns removed members (read-only). */
+  get: (workspaceId: string, memberId: string, signal?: AbortSignal) => {
     const [path, scope] = workspacePath(workspaceId, `/members/${id(memberId)}`);
-    return call<Member>(path, scope);
+    return call<Member>(path, { ...scope, signal });
   },
 
-  /** E39. Your own profile needs no permission; someone else's needs member:update + rank. */
+  /** P2-API-11. Your own profile needs no permission; someone else's needs member:update + rank. */
   updateProfile: (workspaceId: string, memberId: string, body: UpdateMemberProfileRequest) => {
     const [path, scope] = workspacePath(workspaceId, `/members/${id(memberId)}`);
     return call<Member>(path, { ...scope, method: 'PATCH', body });
   },
 
-  /** E40. Replaces the member's roles. */
+  /** P2-API-10. Replaces the member's whole role set (1–20 ids). */
   setRoles: (workspaceId: string, memberId: string, roleIds: string[]) => {
     const [path, scope] = workspacePath(workspaceId, `/members/${id(memberId)}/roles`);
     return call<Member>(path, { ...scope, method: 'PUT', body: { roleIds } });
   },
 
-  /** E41. The reason is shown to the member. */
+  /** P2-API-12. Keeps their roles; does NOT revoke API keys they created. */
   suspend: (workspaceId: string, memberId: string, reason?: string) => {
     const [path, scope] = workspacePath(workspaceId, `/members/${id(memberId)}/suspend`);
     return call<Member>(path, { ...scope, method: 'POST', body: reason ? { reason } : {} });
   },
 
-  /** E42 */
+  /** P2-API-13. Suspended → active. Not an undelete for removed members. */
   reactivate: (workspaceId: string, memberId: string) => {
     const [path, scope] = workspacePath(workspaceId, `/members/${id(memberId)}/reactivate`);
     return call<Member>(path, { ...scope, method: 'POST', body: {} });
   },
 
-  /** E43. Also revokes every API key the member created here. */
+  /** P2-API-14. Soft-deletes the membership and revokes every API key the member created here. */
   remove: (workspaceId: string, memberId: string) => {
     const [path, scope] = workspacePath(workspaceId, `/members/${id(memberId)}`);
     return call<RemoveMemberResponse>(path, { ...scope, method: 'DELETE' });
   },
 
-  /** E44 */
+  /** P2-API-15. The owner is refused (CANNOT_REMOVE_LAST_OWNER). */
   leave: (workspaceId: string) => {
     const [path, scope] = workspacePath(workspaceId, '/members/leave');
-    return call<{ left: true }>(path, { ...scope, method: 'POST' });
+    return call<{ left: true }>(path, { ...scope, method: 'POST', body: {} });
   },
 };
 
 export const invitationsApi = {
-  /** E45. Newest first. */
-  list: (workspaceId: string, params: ListInvitationsParams = {}) => {
+  /** P2-API-16. Newest first. Only page, limit and status do anything (no server search or sort). */
+  list: (workspaceId: string, params: ListInvitationsParams = {}, signal?: AbortSignal) => {
     const [path, scope] = workspacePath(workspaceId, '/invitations');
-    return callPaginated<Invitation>(path, { ...scope, query: { ...params } });
+    return callPaginated<Invitation>(path, { ...scope, query: { ...params }, signal });
   },
 
-  /** E46. MEMBERSHIP_SUSPENDED here is about the invitee, not about you. */
+  /**
+   * P2-API-17. Email rate policy. Success means stored and sending attempted, not
+   * delivered. MEMBERSHIP_SUSPENDED here is about the invitee, not about you.
+   */
   create: (workspaceId: string, body: CreateInvitationRequest) => {
     const [path, scope] = workspacePath(workspaceId, '/invitations');
     return call<Invitation>(path, { ...scope, method: 'POST', body, localCodes: ['MEMBERSHIP_SUSPENDED'] });
   },
 
-  /** E47. Issues a new link and voids the old one. */
+  /** P2-API-18. Email rate policy. Rotates the link and expiry; the old link stops working. */
   resend: (workspaceId: string, invitationId: string) => {
     const [path, scope] = workspacePath(workspaceId, `/invitations/${id(invitationId)}/resend`);
     return call<Invitation>(path, { ...scope, method: 'POST', body: {} });
   },
 
-  /** E48 */
+  /** P2-API-19. Sets REVOKED. Accepted invitations can't be revoked. */
   revoke: (workspaceId: string, invitationId: string) => {
     const [path, scope] = workspacePath(workspaceId, `/invitations/${id(invitationId)}`);
     return call<Invitation>(path, { ...scope, method: 'DELETE' });
@@ -334,37 +340,37 @@ export const invitationsApi = {
 };
 
 export const rolesApi = {
-  /** E27, for the administration screens (global error handling on). Sorted by priority, highest first. */
-  list: (workspaceId: string) => {
+  /** P2-API-21. Complete, priority DESC then name ASC. `permissionKeys` keeps raw wildcards. */
+  list: (workspaceId: string, signal?: AbortSignal) => {
     const [path, scope] = workspacePath(workspaceId, '/roles');
-    return call<Role[]>(path, scope);
+    return call<Role[]>(path, { ...scope, signal });
   },
 
-  /** E51 */
-  get: (workspaceId: string, roleId: string) => {
+  /** P2-API-22 */
+  get: (workspaceId: string, roleId: string, signal?: AbortSignal) => {
     const [path, scope] = workspacePath(workspaceId, `/roles/${id(roleId)}`);
-    return call<Role>(path, scope);
+    return call<Role>(path, { ...scope, signal });
   },
 
-  /** E52 */
+  /** P2-API-23 */
   create: (workspaceId: string, body: CreateRoleRequest) => {
     const [path, scope] = workspacePath(workspaceId, '/roles');
     return call<Role>(path, { ...scope, method: 'POST', body });
   },
 
-  /** E53. Send only the changed fields: `permissionKeys` only when the selection changed. */
+  /** P2-API-24. Send only the changed fields: `permissionKeys` only when the grant set is deliberately replaced. */
   update: (workspaceId: string, roleId: string, body: UpdateRoleRequest) => {
     const [path, scope] = workspacePath(workspaceId, `/roles/${id(roleId)}`);
     return call<Role>(path, { ...scope, method: 'PATCH', body });
   },
 
-  /** E54 */
+  /** P2-API-25. Refused with ROLE_IN_USE while active or suspended members hold it. Ignores pending invitations. */
   remove: (workspaceId: string, roleId: string) => {
     const [path, scope] = workspacePath(workspaceId, `/roles/${id(roleId)}`);
     return call<{ deleted: true }>(path, { ...scope, method: 'DELETE' });
   },
 
-  /** E55. A repair tool: rebuilds every member's effective permissions. */
+  /** P2-API-26. A repair tool: rebuilds every non-removed member's effective permissions. */
   recompute: (workspaceId: string) => {
     const [path, scope] = workspacePath(workspaceId, '/roles/recompute');
     return call<{ membersRecomputed: number }>(path, { ...scope, method: 'POST', body: {} });
@@ -372,25 +378,28 @@ export const rolesApi = {
 };
 
 export const apiKeysApi = {
-  /** E56. The scopes an API key may carry. */
-  scopes: (workspaceId: string) => {
+  /** P2-API-27. The scopes any API key may carry (not filtered to yours). */
+  scopes: (workspaceId: string, signal?: AbortSignal) => {
     const [path, scope] = workspacePath(workspaceId, '/api-keys/scopes');
-    return call<{ scopes: string[] }>(path, scope);
+    return call<{ scopes: string[] }>(path, { ...scope, signal });
   },
 
-  /** E57. Newest first, includes revoked keys, not paginated. */
-  list: (workspaceId: string) => {
+  /** P2-API-28. Newest first, includes revoked and expired keys, not paginated. */
+  list: (workspaceId: string, signal?: AbortSignal) => {
     const [path, scope] = workspacePath(workspaceId, '/api-keys');
-    return call<ApiKey[]>(path, scope);
+    return call<ApiKey[]>(path, { ...scope, signal });
   },
 
-  /** E58. The plaintext key is in the response once and never again. */
+  /**
+   * P2-API-29. The plaintext key is in this response once and never again: the
+   * caller keeps it in component state only, never in a cache, store or log.
+   */
   create: (workspaceId: string, body: CreateApiKeyRequest) => {
     const [path, scope] = workspacePath(workspaceId, '/api-keys');
     return call<CreatedApiKey>(path, { ...scope, method: 'POST', body });
   },
 
-  /** E59. A JSON body on a DELETE. Idempotent. */
+  /** P2-API-30. A JSON body on a DELETE. Revoking twice returns the unchanged key. */
   revoke: (workspaceId: string, apiKeyId: string, reason?: string) => {
     const [path, scope] = workspacePath(workspaceId, `/api-keys/${id(apiKeyId)}`);
     return call<ApiKey>(path, { ...scope, method: 'DELETE', body: reason ? { reason } : {} });

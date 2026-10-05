@@ -16,7 +16,7 @@ import { UploadWatcher } from '@/features/knowledge/upload/upload-activity';
 import { useUploadsActive } from '@/features/knowledge/upload/use-uploads-active';
 import { primaryRoleLabel, useCan, useWorkspace } from '@/features/workspaces/workspace-context';
 import { WorkspaceSwitcher } from '@/features/workspaces/workspace-switcher';
-import { HOME_NAV, LIVE_PHASE, NAV_GROUPS, PAGE_PARENTS, SECTIONS, SUBSECTION_LABELS, type SectionKey } from './nav';
+import { HOME_NAV, LIVE_PHASE, NAV_GROUPS, PAGE_PARENTS, SECTIONS, STANDALONE_PAGES, SUBSECTION_LABELS, type SectionKey } from './nav';
 import { EmailVerificationBanner, TopBar } from './top-bar';
 
 function initialCollapsed(): boolean {
@@ -103,6 +103,8 @@ function Breadcrumb({ workspaceName, slug }: { workspaceName: string; slug: stri
     crumbs.push({ label: page.label, to: sub ? `${base}/${segment}` : undefined });
     if (sub === 'new') crumbs.push({ label: 'New' });
     else if (sub && segment === 'knowledge-bases') crumbs.push({ label: <KnowledgeBaseCrumb knowledgeBaseId={sub} /> });
+  } else if (segment && STANDALONE_PAGES[segment]) {
+    crumbs.push({ label: STANDALONE_PAGES[segment] });
   } else {
     crumbs.push({ label: segment ? 'Not found' : HOME_NAV.label });
   }

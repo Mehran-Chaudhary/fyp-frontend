@@ -126,9 +126,10 @@ export const workspacesInfiniteQuery = infiniteQueryOptions({
   getNextPageParam: (last) => (last.pagination.hasNextPage ? last.pagination.page + 1 : undefined),
 });
 
+/** P2-API-20: workspace-independent, cached for the signed-in session (cleared with it). */
 export const permissionCatalogueQuery = queryOptions({
   queryKey: queryKeys.permissionCatalogue,
-  queryFn: () => permissionsApi.catalogue(),
+  queryFn: ({ signal }) => permissionsApi.catalogue(signal),
   staleTime: Infinity,
   gcTime: Infinity,
 });
@@ -194,64 +195,127 @@ export const workspaceDetailsQuery = (workspaceId: string) =>
     staleTime: 60_000,
   });
 
-// ── Phase 2 ─────────────────────────────────────────────────────────────────
+// ── Phase 2 (spec §8: every key starts with the canonical workspace id) ─────
 
 export const membersQuery = (workspaceId: string, params: ListMembersParams) =>
   queryOptions({
     queryKey: queryKeys.membersList(workspaceId, params),
-    queryFn: () => membersApi.list(workspaceId, params),
+    // The signal cancels a search that a newer keystroke has replaced.
+    queryFn: ({ signal }) => membersApi.list(workspaceId, params, signal),
     placeholderData: keepPreviousData,
+  });
+
+/** Active members a page at a time, for pickers that must reach everyone (transfer ownership). */
+export const activeMembersInfiniteQuery = (workspaceId: string, search: string) =>
+  infiniteQueryOptions({
+    queryKey: [...queryKeys.members(workspaceId), 'active-infinite', search] as const,
+    queryFn: ({ pageParam, signal }) =>
+      membersApi.list(
+        workspaceId,
+        { page: pageParam, limit: 50, status: 'ACTIVE', sortBy: 'name', sortDirection: 'ASC', ...(search ? { search } : {}) },
+        signal,
+      ),
+    initialPageParam: 1,
+    getNextPageParam: (last) => (last.pagination.hasNextPage ? last.pagination.page + 1 : undefined),
+  });
+
+/** Pages through a list endpoint at its maximum page size, up to a hard stop. */
+async function fetchAllPages<T>(
+  fetchPage: (page: number) => Promise<{ items: T[]; pagination: { hasNextPage: boolean } }>,
+  maxPages = 20,
+): Promise<{ items: T[]; complete: boolean }> {
+  const items: T[] = [];
+  for (let page = 1; page <= maxPages; page += 1) {
+    const result = await fetchPage(page);
+    items.push(...result.items);
+    if (!result.pagination.hasNextPage) return { items, complete: true };
+  }
+  return { items, complete: false };
+}
+
+/**
+ * Display names by USER id, for API-key creators (keys only carry `createdById`).
+ * Includes removed members, whose keys may still be listed. Needs member:read.
+ */
+export const memberNamesQuery = (workspaceId: string) =>
+  queryOptions({
+    queryKey: [...queryKeys.members(workspaceId), 'names'] as const,
+    queryFn: async ({ signal }) => {
+      const [current, removed] = await Promise.all([
+        fetchAllPages((page) => membersApi.list(workspaceId, { page, limit: 100 }, signal), 10),
+        fetchAllPages((page) => membersApi.list(workspaceId, { page, limit: 100, status: 'REMOVED' }, signal), 10),
+      ]);
+      const names = new Map<string, { name: string; removed: boolean }>();
+      for (const member of removed.items) names.set(member.userId, { name: member.displayName, removed: true });
+      for (const member of current.items) names.set(member.userId, { name: member.displayName, removed: false });
+      return names;
+    },
+    staleTime: 60_000,
   });
 
 export const memberQuery = (workspaceId: string, memberId: string) =>
   queryOptions({
     queryKey: queryKeys.memberDetail(workspaceId, memberId),
-    queryFn: () => membersApi.get(workspaceId, memberId),
+    queryFn: ({ signal }) => membersApi.get(workspaceId, memberId, signal),
   });
 
 export const invitationsQuery = (workspaceId: string, params: ListInvitationsParams) =>
   queryOptions({
     queryKey: queryKeys.invitationsList(workspaceId, params),
-    queryFn: () => invitationsApi.list(workspaceId, params),
+    queryFn: ({ signal }) => invitationsApi.list(workspaceId, params, signal),
     placeholderData: keepPreviousData,
+  });
+
+/**
+ * Every invitation stored as PENDING, all pages (newest first). Used to find the
+ * invitation behind an uncertain "send", and the ones a role deletion would break.
+ * Some may already have expired: check `expiresAt`.
+ */
+export const pendingInvitationsQuery = (workspaceId: string) =>
+  queryOptions({
+    queryKey: [...queryKeys.invitations(workspaceId), 'pending-all'] as const,
+    queryFn: ({ signal }) =>
+      fetchAllPages((page) => invitationsApi.list(workspaceId, { page, limit: 100, status: 'PENDING' }, signal), 10),
   });
 
 export const rolesQuery = (workspaceId: string) =>
   queryOptions({
     queryKey: queryKeys.roles(workspaceId),
-    queryFn: () => rolesApi.list(workspaceId),
+    queryFn: ({ signal }) => rolesApi.list(workspaceId, signal),
   });
 
 export const roleQuery = (workspaceId: string, roleId: string) =>
   queryOptions({
     queryKey: queryKeys.roleDetail(workspaceId, roleId),
-    queryFn: () => rolesApi.get(workspaceId, roleId),
+    queryFn: ({ signal }) => rolesApi.get(workspaceId, roleId, signal),
   });
 
-/** Members holding a role (active and suspended): one cheap request per role (§5.5). */
+/** Members holding a role (active and suspended, as ROLE_IN_USE counts them): one cheap request per role. */
 export const roleMemberCountQuery = (workspaceId: string, roleId: string) =>
   queryOptions({
     queryKey: queryKeys.roleMemberCount(workspaceId, roleId),
-    queryFn: async () => (await membersApi.list(workspaceId, { roleId, limit: 1 })).pagination.totalItems,
+    queryFn: async ({ signal }) =>
+      (await membersApi.list(workspaceId, { roleId, limit: 1 }, signal)).pagination.totalItems,
   });
 
+/** Metadata only. A newly created key's secret never enters this (or any) cache. */
 export const apiKeysQuery = (workspaceId: string) =>
   queryOptions({
     queryKey: queryKeys.apiKeys(workspaceId),
-    queryFn: () => apiKeysApi.list(workspaceId),
+    queryFn: ({ signal }) => apiKeysApi.list(workspaceId, signal),
   });
 
 export const apiKeyScopesQuery = (workspaceId: string) =>
   queryOptions({
     queryKey: queryKeys.apiKeyScopes(workspaceId),
-    queryFn: async () => (await apiKeysApi.scopes(workspaceId)).scopes,
-    staleTime: Infinity,
+    queryFn: async ({ signal }) => (await apiKeysApi.scopes(workspaceId, signal)).scopes,
+    staleTime: 5 * 60_000,
   });
 
 export const ipRulesQuery = (workspaceId: string) =>
   queryOptions({
     queryKey: queryKeys.ipRules(workspaceId),
-    queryFn: () => workspaceApi.ipRules(workspaceId),
+    queryFn: ({ signal }) => workspaceApi.ipRules(workspaceId, signal),
   });
 
 export const invitationPreviewQuery = (token: string) =>

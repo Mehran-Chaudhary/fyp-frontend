@@ -250,7 +250,7 @@ function EraseDialog({
                     return (
                       <li key={workspace.id} className="font-medium">
                         {slug ? (
-                          <Link to={`/w/${slug}/settings`} className="underline underline-offset-2">
+                          <Link to={`/w/${slug}/settings/danger`} className="underline underline-offset-2">
                             {workspace.name}
                           </Link>
                         ) : (

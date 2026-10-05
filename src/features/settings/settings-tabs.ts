@@ -1,0 +1,23 @@
+import { KeySquare, Network, Settings2, ShieldCheck, SlidersHorizontal, TriangleAlert } from 'lucide-react';
+import type { TabNavItem } from '@/components/ui/tab-nav';
+import type { Can } from '@/lib/permissions/can';
+
+/**
+ * The settings tabs a member can see (Phase 2 spec §4). Each tab checks its own
+ * read permission, so someone with only apikey:read still reaches API keys and a
+ * missing read never blanks the whole area.
+ */
+export function settingsTabs(base: string, can: Can): TabNavItem[] {
+  const tabs: TabNavItem[] = [];
+  if (can('workspace:read')) {
+    tabs.push({ to: `${base}/general`, label: 'General', icon: Settings2 });
+    tabs.push({ to: `${base}/defaults`, label: 'Defaults', icon: SlidersHorizontal });
+    tabs.push({ to: `${base}/security`, label: 'Security', icon: ShieldCheck });
+  }
+  if (can('security:read')) tabs.push({ to: `${base}/networks`, label: 'Networks', icon: Network });
+  if (can('apikey:read')) tabs.push({ to: `${base}/api-keys`, label: 'API keys', icon: KeySquare });
+  if (can('workspace:read') && can.any('workspace:transfer', 'workspace:delete')) {
+    tabs.push({ to: `${base}/danger`, label: 'Danger zone', icon: TriangleAlert });
+  }
+  return tabs;
+}

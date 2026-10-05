@@ -30,7 +30,10 @@ import { DeleteRoleDialog, RecomputeDialog } from './role-dialogs';
 
 const COLUMNS = 5;
 
-/** Team → Roles (spec §5.5, E27 + E28 + member counts from E37). */
+/**
+ * Team → Roles (P2-API-20/21, member counts from P2-API-08). Roles carry no holder
+ * count, so it is read per role from the member list when member:read allows.
+ */
 export function RolesPage() {
   const workspace = useWorkspace();
   const can = useCan();
@@ -170,7 +173,16 @@ function RolesList() {
                       <RankMeter priority={role.priority} myPriority={access.myPriority} />
                     </TD>
                     <TD className="hidden text-muted sm:table-cell tabular">
-                      {permissionCount === null ? '—' : role.permissionKeys.includes('*:*') ? 'All' : permissionCount}
+                      <span className="inline-flex items-center gap-1.5">
+                        {permissionCount === null ? '—' : role.permissionKeys.includes('*:*') ? 'All' : permissionCount}
+                        {role.permissionKeys.some((key) => key.includes('*')) && !role.permissionKeys.includes('*:*') ? (
+                          <Tooltip content={`Stored with wildcards: ${role.permissionKeys.filter((key) => key.includes('*')).join(', ')}`}>
+                            <span tabIndex={0} className="rounded border border-brand-200 bg-brand-50 px-1 font-mono text-[10.5px] leading-4 text-brand-800">
+                              *
+                            </span>
+                          </Tooltip>
+                        ) : null}
+                      </span>
                     </TD>
                     <TD className="hidden md:table-cell" onClick={(event) => event.stopPropagation()}>
                       {!countsAllowed ? (

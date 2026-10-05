@@ -144,9 +144,14 @@ describe('classification helpers', () => {
     expect(isWorkspaceAccessError(new ApiError({ status: 403, code: 'IP_NOT_ALLOWED', message: 'x' }))).toBe(true);
   });
 
-  it('marks only answerless failures as an unknown outcome', () => {
+  it('marks answerless failures and 5xx answers as an unknown outcome', () => {
     expect(isOutcomeUnknown(new ApiError({ status: 0, code: 'NETWORK_TIMEOUT', message: 'x', source: 'client' }))).toBe(true);
     expect(isOutcomeUnknown(new ApiError({ status: 0, code: 'NETWORK_ERROR', message: 'x', source: 'client' }))).toBe(true);
+    // The server may have written before it failed (Phase 2 spec §9).
+    expect(isOutcomeUnknown(new ApiError({ status: 500, code: 'INTERNAL_SERVER_ERROR', message: 'x' }))).toBe(true);
+    expect(isOutcomeUnknown(new ApiError({ status: 503, code: 'SERVICE_UNAVAILABLE', message: 'x' }))).toBe(true);
     expect(isOutcomeUnknown(new ApiError({ status: 409, code: 'ORGANIZATION_SLUG_TAKEN', message: 'x' }))).toBe(false);
+    expect(isOutcomeUnknown(new ApiError({ status: 429, code: 'RATE_LIMIT_EXCEEDED', message: 'x' }))).toBe(false);
+    expect(isOutcomeUnknown(new Error('x'))).toBe(false);
   });
 });

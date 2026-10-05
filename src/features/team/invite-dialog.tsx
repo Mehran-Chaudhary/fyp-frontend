@@ -1,11 +1,12 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { Mail, MailPlus, ShieldOff, Send } from 'lucide-react';
+import { Mail, MailPlus, RefreshCw, ShieldOff, Send } from 'lucide-react';
 import { useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { Link } from 'react-router';
 import { z } from 'zod';
 import { RateLimitNotice } from '@/components/feedback/global-states';
+import { OutcomeUnknown } from '@/components/feedback/outcome-unknown';
 import { ErrorState } from '@/components/feedback/states';
 import { Button } from '@/components/ui/button';
 import { Callout } from '@/components/ui/callout';
@@ -15,14 +16,14 @@ import { Input, Textarea } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/misc';
 import { Select } from '@/components/ui/select';
 import { invitationsApi } from '@/lib/api/endpoints';
-import { hasCode, isApiError } from '@/lib/api/errors';
+import { hasCode, isApiError, isOutcomeUnknown } from '@/lib/api/errors';
 import type { Role } from '@/lib/api/types';
 import { applyServerErrors, detailList, messageFor } from '@/lib/errors';
-import { queryKeys, rolesQuery, workspaceDetailsQuery } from '@/lib/queries';
+import { pendingInvitationsQuery, queryKeys, rolesQuery, workspaceDetailsQuery } from '@/lib/queries';
 import { queryClient } from '@/lib/query-client';
 import { grantableRoles } from '@/lib/rbac/rules';
 import { toast, toastError } from '@/lib/toast';
-import { formatDate, formatDateTime } from '@/lib/utils';
+import { formatDate, formatDateTime, pluralize } from '@/lib/utils';
 import { invalidateInvitations } from '@/lib/workspace/cache';
 import { isEmailAllowed, normaliseDomain } from '@/lib/workspace/domains';
 import { useAccess } from '@/features/workspaces/use-access';
@@ -40,7 +41,11 @@ const schema = z.object({
 });
 type Values = z.infer<typeof schema>;
 
-/** "Invite people" (spec §5.3). */
+/**
+ * "Invite people" (P2-API-17). Success means the invitation was stored and an
+ * email was attempted; delivery can't be confirmed from here. Never resent
+ * automatically: after a lost answer the pending invitations are checked first.
+ */
 export function InviteDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   // A fresh form every time the dialog is reopened (after the close animation).
   const [session, setSession] = useState(0);
@@ -63,7 +68,9 @@ export function InviteDialog({ open, onOpenChange }: { open: boolean; onOpenChan
 
 type Problem =
   | { kind: 'pending'; email: string; invitationId: string | null; expiresAt: string | null }
-  | { kind: 'suspended'; email: string };
+  | { kind: 'suspended'; email: string }
+  | { kind: 'uncertain'; email: string; error: unknown }
+  | { kind: 'found'; email: string; expiresAt: string; createdAt: string };
 
 function InviteForm({ onClose, onBusyChange }: { onClose: () => void; onBusyChange: (busy: boolean) => void }) {
   const workspace = useWorkspace();
@@ -77,6 +84,7 @@ function InviteForm({ onClose, onBusyChange }: { onClose: () => void; onBusyChan
   const [roleError, setRoleError] = useState<string | null>(null);
   const [problem, setProblem] = useState<Problem | null>(null);
   const [rateLimitedUntil, setRateLimitedUntil] = useState<number | null>(null);
+  const [checking, setChecking] = useState(false);
 
   const form = useForm<Values>({ resolver: zodResolver(schema), defaultValues: { email: '', message: '' } });
   const { errors, isSubmitting } = form.formState;
@@ -95,8 +103,8 @@ function InviteForm({ onClose, onBusyChange }: { onClose: () => void; onBusyChan
   const resend = useMutation({
     mutationFn: (invitationId: string) => invitationsApi.resend(workspace.id, invitationId),
     onSuccess: (invitation) => {
-      toast.success('Invitation resent', {
-        description: `A new link went to ${invitation.email}. It expires ${formatDate(invitation.expiresAt)}.`,
+      toast.success(`New invitation link for ${invitation.email}`, {
+        description: `Email delivery was attempted. Only the newest email's link works; it expires ${formatDate(invitation.expiresAt)}.`,
       });
       void invalidateInvitations(workspace.id);
       onClose();
@@ -122,14 +130,18 @@ function InviteForm({ onClose, onBusyChange }: { onClose: () => void; onBusyChan
         ...(roleId ? { roleId } : {}),
         ...(note.trim() ? { message: note.trim() } : {}),
       });
-      toast.success(`Invitation sent to ${invitation.email}`, {
-        description: `They'll join as ${invitation.role?.name ?? 'a member'} and have until ${formatDate(invitation.expiresAt)} to accept.`,
+      toast.success(`Invitation created for ${invitation.email}`, {
+        description: `Email delivery was attempted (it can't be confirmed from here). They'd join as ${invitation.role?.name ?? 'the default role'} and have until ${formatDate(invitation.expiresAt)} to accept.`,
       });
       void invalidateInvitations(workspace.id);
       onBusyChange(false);
       onClose();
     } catch (error) {
       onBusyChange(false);
+      if (isOutcomeUnknown(error)) {
+        setProblem({ kind: 'uncertain', email, error });
+        return;
+      }
       if (!isApiError(error)) {
         form.setError('root.server', { message: messageFor(error) });
         return;
@@ -161,16 +173,28 @@ function InviteForm({ onClose, onBusyChange }: { onClose: () => void; onBusyChan
         }
         case 'CANNOT_ESCALATE_PRIVILEGES': {
           const denied = detailList(error, 'deniedPermissions');
+          const rolePriority = error.details?.rolePriority;
+          const yourPriority = error.details?.yourPriority;
           setRoleError(
             denied.length
               ? `You can't invite into this role: it grants ${denied.join(', ')}, which you don't hold.`
-              : `You can't invite into this role. ${error.message}`,
+              : typeof rolePriority === 'number' && typeof yourPriority === 'number'
+                ? `You can't invite into this role: it ranks ${rolePriority}, and you rank ${yourPriority}.`
+                : `You can't invite into this role. ${error.message}`,
           );
           break;
         }
-        case 'SEAT_LIMIT_REACHED':
-          form.setError('root.server', { message: messageFor(error) });
+        case 'SEAT_LIMIT_REACHED': {
+          const limit = error.details?.limit;
+          const current = error.details?.current;
+          form.setError('root.server', {
+            message:
+              typeof limit === 'number' && typeof current === 'number'
+                ? `This workspace has ${pluralize(current, 'member')} and a limit of ${limit}. Pending invitations don't hold seats, but new ones can't be created until a seat is free.`
+                : messageFor(error),
+          });
           break;
+        }
         case 'ROLE_NOT_FOUND':
           setRoleError('That role was just deleted. Pick another one.');
           setChosenRoleId(undefined);
@@ -189,11 +213,33 @@ function InviteForm({ onClose, onBusyChange }: { onClose: () => void; onBusyChan
     }
   });
 
+  /** After a lost answer: is there a pending invitation for this address now? (spec P2-API-17) */
+  const checkPending = async (email: string) => {
+    setChecking(true);
+    try {
+      const pending = await queryClient.fetchQuery({ ...pendingInvitationsQuery(workspace.id), staleTime: 0 });
+      const match = pending.items.find((invitation) => invitation.email.toLowerCase() === email.toLowerCase());
+      void invalidateInvitations(workspace.id);
+      if (match) {
+        setProblem({ kind: 'found', email: match.email, expiresAt: match.expiresAt, createdAt: match.createdAt });
+      } else {
+        setProblem(null);
+        form.setError('root.server', {
+          message: `No pending invitation for ${email} was found, so it wasn't created. You can send it now.`,
+        });
+      }
+    } catch (checkError) {
+      form.setError('root.server', { message: `We still couldn't check: ${messageFor(checkError)}` });
+    } finally {
+      setChecking(false);
+    }
+  };
+
   const header = (
     <DialogHeader
       icon={<MailPlus />}
       title={`Invite people to ${workspace.name}`}
-      description="They'll get an email with a link that's valid for 7 days."
+      description="They get an email with a link to join. The link only exists in that email."
     />
   );
 
@@ -266,17 +312,24 @@ function InviteForm({ onClose, onBusyChange }: { onClose: () => void; onBusyChan
             leading={<Mail />}
             placeholder={allowedDomains[0] ? `colleague@${allowedDomains[0]}` : 'colleague@company.com'}
             maxLength={320}
-            {...form.register('email', { onChange: () => setProblem(null) })}
+            {...form.register('email', {
+              // An unresolved send stays until it's checked, whatever is typed next.
+              onChange: () => setProblem((current) => (current?.kind === 'uncertain' ? current : null)),
+            })}
           />
         </Field>
 
         {rolesUnavailable ? (
-          <Callout tone="neutral">They'll join with this workspace's default role.</Callout>
+          <Callout tone="neutral">
+            They'll join with this workspace's default role. Choosing a role needs{' '}
+            <code className="font-mono text-[12px]">role:read</code>; the server still checks that you may grant the
+            default role.
+          </Callout>
         ) : (
           <Field
             label="Role"
             error={roleError ?? undefined}
-            hint="You can only offer roles that rank below yours and whose permissions you hold."
+            hint="Only roles that rank below you and whose permissions you hold are offered."
           >
             <Select
               value={roleId}
@@ -331,6 +384,37 @@ function InviteForm({ onClose, onBusyChange }: { onClose: () => void; onBusyChan
           </Callout>
         ) : null}
 
+        {problem?.kind === 'uncertain' ? (
+          <OutcomeUnknown
+            error={problem.error}
+            title="We couldn't confirm whether the invitation was created"
+            action={
+              <Button size="sm" variant="secondary" loading={checking} onClick={() => void checkPending(problem.email)}>
+                {checking ? null : <RefreshCw />}
+                Check pending invitations
+              </Button>
+            }
+          >
+            It may exist already, and an email may have gone to {problem.email}. Check before sending again so they don't
+            get two.
+          </OutcomeUnknown>
+        ) : null}
+
+        {problem?.kind === 'found' ? (
+          <Callout
+            tone="success"
+            title={`An invitation for ${problem.email} exists`}
+            action={
+              <Button size="sm" variant="secondary" onClick={onClose}>
+                Done
+              </Button>
+            }
+          >
+            It was created {formatDateTime(problem.createdAt)} and expires {formatDateTime(problem.expiresAt)}. Email
+            delivery was attempted; if it doesn't arrive, resend it from the Invitations tab.
+          </Callout>
+        ) : null}
+
         {problem?.kind === 'suspended' ? (
           <Callout
             tone="warning"
@@ -352,7 +436,7 @@ function InviteForm({ onClose, onBusyChange }: { onClose: () => void; onBusyChan
 
         <RateLimitNotice
           until={rateLimitedUntil}
-          message="Too many invitations to this address."
+          message="Too many invitation emails for now."
           onDone={() => setRateLimitedUntil(null)}
         />
         <FormError message={errors.root?.server?.message} />
@@ -361,7 +445,17 @@ function InviteForm({ onClose, onBusyChange }: { onClose: () => void; onBusyChan
         <Button variant="ghost" onClick={onClose} disabled={isSubmitting}>
           Cancel
         </Button>
-        <Button type="submit" loading={isSubmitting} disabled={!!rateLimitedUntil || (!rolesUnavailable && !roleId)}>
+        <Button
+          type="submit"
+          loading={isSubmitting}
+          disabled={
+            !!rateLimitedUntil ||
+            (!rolesUnavailable && !roleId) ||
+            problem?.kind === 'uncertain' ||
+            problem?.kind === 'found' ||
+            checking
+          }
+        >
           {isSubmitting ? null : <Send />}
           Send invitation
         </Button>

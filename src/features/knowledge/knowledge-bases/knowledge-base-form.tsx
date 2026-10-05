@@ -218,7 +218,7 @@ export function KnowledgeBaseForm({
           actions={
             can('workspace:read') ? (
               <Button asChild variant="ghost" size="xs">
-                <Link to={`/w/${workspace.slug}/settings`}>
+                <Link to={`/w/${workspace.slug}/settings/defaults`}>
                   Inherited from workspace settings
                   <ArrowUpRight />
                 </Link>

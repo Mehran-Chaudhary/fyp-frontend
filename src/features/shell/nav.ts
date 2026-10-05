@@ -114,15 +114,15 @@ export const SECTIONS: Record<SectionKey, SectionDefinition> = {
     key: 'settings',
     label: 'Settings',
     icon: Settings,
-    // workspace:read per the spec; apikey:read alone still reaches the API keys tab.
-    anyOf: ['workspace:read', 'apikey:read'],
+    // Each settings tab has its own read permission (Phase 2 spec §3); any one reveals the section.
+    anyOf: ['workspace:read', 'security:read', 'apikey:read'],
     phase: 2,
     group: 'govern',
-    summary: 'Workspace profile and security policy: required two-step verification, IP allowlists and API keys.',
+    summary: 'Workspace profile, processing defaults and security policy: required two-step verification, IP allowlists and API keys.',
     bullets: [
-      'Name, description and audit retention',
-      'Require two-step verification for every member',
-      'Network allowlists and scoped API keys',
+      'Name, description, chunking defaults and audit retention',
+      'Require two-step verification or a verified email for every member',
+      'Network allowlists, scoped API keys, ownership transfer',
     ],
   },
 };
@@ -134,8 +134,17 @@ export const SUBSECTION_LABELS: Record<string, string> = {
   members: 'Members',
   invitations: 'Invitations',
   roles: 'Roles',
+  general: 'General',
+  defaults: 'Defaults',
   security: 'Security',
+  networks: 'Networks',
   'api-keys': 'API keys',
+  danger: 'Danger zone',
+};
+
+/** Workspace pages outside any section, by their path segment (breadcrumb label). */
+export const STANDALONE_PAGES: Record<string, string> = {
+  'my-workspace-profile': 'Your workspace profile',
 };
 
 /**

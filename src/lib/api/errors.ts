@@ -187,10 +187,13 @@ export function isTransient(error: unknown): boolean {
 
 /**
  * A mutation whose outcome is unknown: it may have been carried out even though
- * no answer arrived. Never repeat it blindly; re-read state instead (spec §3).
+ * no usable answer arrived (no answer, a timeout, or a 5xx after the server may
+ * already have written). Never repeat it blindly; re-read state instead
+ * (Phase 1 spec §3, Phase 2 spec §9 "5xx/timeout after mutation").
  */
 export function isOutcomeUnknown(error: unknown): boolean {
-  return hasCode(error, 'NETWORK_ERROR', 'NETWORK_TIMEOUT');
+  if (!isApiError(error)) return false;
+  return error.code === 'NETWORK_ERROR' || error.code === 'NETWORK_TIMEOUT' || error.status >= 500;
 }
 
 export function networkError(message = "Can't reach AgentVault. Check your connection."): ApiError {
