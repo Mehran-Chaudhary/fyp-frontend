@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeftRight, ChevronDown, LogOut, MailWarning, ShieldCheck, UserRound } from 'lucide-react';
+import { Activity, ArrowLeftRight, ChevronDown, KeyRound, LogOut, MailWarning, ShieldCheck, UserRound } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { Badge } from '@/components/ui/badge';
@@ -34,7 +34,7 @@ export function TopBar({ children, className }: { children?: ReactNode; classNam
   );
 }
 
-/** Avatar menu: account, switch workspace, sign out (spec §7.10). */
+/** Avatar menu: account, security, switch workspace, service status, sign out. */
 export function UserMenu() {
   const { data: me } = useQuery(meQuery);
   const [signingOut, setSigningOut] = useState(false);
@@ -48,14 +48,14 @@ export function UserMenu() {
           className="flex items-center gap-2 rounded-full py-1 pr-2 pl-1 text-left transition-colors hover:bg-well data-[state=open]:bg-well"
           aria-label={`Account menu for ${me.displayName}`}
         >
-          <Avatar name={me.displayName} size="sm" />
+          <Avatar name={me.displayName} src={me.avatarUrl} size="sm" />
           <span className="hidden max-w-40 truncate text-[13px] font-medium text-ink sm:block">{me.displayName}</span>
           <ChevronDown className="size-3.5 text-faint" aria-hidden />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent className="w-72">
         <div className="flex items-center gap-3 px-2.5 py-2.5">
-          <Avatar name={me.displayName} size="md" />
+          <Avatar name={me.displayName} src={me.avatarUrl} size="md" />
           <div className="min-w-0">
             <p className="truncate text-[13px] font-semibold text-ink">{me.displayName}</p>
             <p className="truncate text-xs text-muted">{me.email}</p>
@@ -77,9 +77,22 @@ export function UserMenu() {
           </Link>
         </DropdownMenuItem>
         <DropdownMenuItem asChild>
+          <Link to="/account/security">
+            <KeyRound />
+            Security and devices
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
           <Link to="/workspaces">
             <ArrowLeftRight />
             Switch workspace
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem asChild>
+          <Link to="/status">
+            <Activity />
+            Service status
           </Link>
         </DropdownMenuItem>
         <DropdownMenuSeparator />

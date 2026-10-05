@@ -1,6 +1,6 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, ArrowRight, Crown, KeyRound, Lock, Users } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Crown, KeyRound, Lock, SearchCheck, Users } from 'lucide-react';
 import { useState, type ChangeEvent, type ReactNode } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { Link, useNavigate } from 'react-router';
@@ -13,12 +13,14 @@ import { Field, FormError } from '@/components/ui/field';
 import { Input, Textarea } from '@/components/ui/input';
 import { WorkspaceTile } from '@/components/ui/misc';
 import { organizationsApi } from '@/lib/api/endpoints';
-import { isApiError } from '@/lib/api/errors';
+import { isApiError, isOutcomeUnknown } from '@/lib/api/errors';
+import { workspaceHref } from '@/lib/auth/landing';
 import { applyServerErrors, messageFor } from '@/lib/errors';
 import { useDocumentTitle } from '@/lib/hooks';
-import { meQuery, queryKeys } from '@/lib/queries';
+import { meQuery, queryKeys, workspacesQuery } from '@/lib/queries';
 import { queryClient } from '@/lib/query-client';
 import { toast } from '@/lib/toast';
+import { timestamp } from '@/lib/utils';
 import { slugPreview, slugify } from '@/lib/validation/slug';
 import { workspaceDescriptionField, workspaceNameField, workspaceSlugField } from '@/lib/validation/schemas';
 
@@ -29,13 +31,27 @@ const schema = z.object({
 });
 type Values = z.infer<typeof schema>;
 
-/** Create a workspace (spec §7.9, E24). */
+/** A create request that got no answer: it may or may not have happened. */
+interface Uncertain {
+  name: string;
+  slug: string;
+  sentAt: number;
+}
+
+/**
+ * Create a workspace (P1-API-21). The creator becomes its owner. The returned id
+ * and slug are the truth: the server may add a suffix to a taken slug. A request
+ * without an answer is never repeated blindly; the user checks first.
+ */
 export function CreateWorkspacePage() {
   useDocumentTitle('Create workspace');
   const navigate = useNavigate();
   const { data: me } = useQuery(meQuery);
   const [slugEdited, setSlugEdited] = useState(false);
   const [limit, setLimit] = useState<string | null>(null);
+  const [uncertain, setUncertain] = useState<Uncertain | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [checkResult, setCheckResult] = useState<string | null>(null);
   const isFirst = (me?.memberships.length ?? 0) === 0;
 
   const form = useForm<Values>({
@@ -53,6 +69,9 @@ export function CreateWorkspacePage() {
   });
 
   const onSubmit = form.handleSubmit(async (values) => {
+    if (uncertain) return;
+    setCheckResult(null);
+    const sentAt = timestamp();
     try {
       const created = await organizationsApi.create({
         name: values.name,
@@ -72,8 +91,12 @@ export function CreateWorkspacePage() {
       } else {
         toast.success('Workspace created', { description: `You're the owner of ${created.name}.` });
       }
-      navigate(`/w/${created.slug}`, { replace: true });
+      navigate(workspaceHref(created), { replace: true });
     } catch (error) {
+      if (isOutcomeUnknown(error)) {
+        setUncertain({ name: values.name.trim(), slug: values.slug || slugPreview(values.name), sentAt });
+        return;
+      }
       if (!isApiError(error)) {
         form.setError('root.server', { message: messageFor(error) });
         return;
@@ -83,6 +106,7 @@ export function CreateWorkspacePage() {
           form.setError('slug', { message: 'That URL is reserved.' }, { shouldFocus: true });
           break;
         case 'ORGANIZATION_SLUG_TAKEN':
+        case 'RESOURCE_CONFLICT':
           form.setError('slug', { message: 'That URL is taken. Try a different one.' }, { shouldFocus: true });
           break;
         case 'ORGANIZATION_LIMIT_REACHED':
@@ -93,6 +117,34 @@ export function CreateWorkspacePage() {
       }
     }
   });
+
+  /** Looks for the workspace among yours (newest membership first). */
+  const checkCreated = async () => {
+    if (!uncertain) return;
+    setChecking(true);
+    try {
+      const firstPage = await queryClient.fetchQuery({ ...workspacesQuery(1), staleTime: 0 });
+      const found = firstPage.items.find(
+        (workspace) =>
+          workspace.isOwner &&
+          Date.parse(workspace.createdAt) >= uncertain.sentAt - 60_000 &&
+          (workspace.name === uncertain.name ||
+            (!!uncertain.slug && (workspace.slug === uncertain.slug || workspace.slug.startsWith(`${uncertain.slug}-`)))),
+      );
+      if (found) {
+        await queryClient.refetchQueries({ queryKey: queryKeys.me });
+        toast.success('Workspace created', { description: `${found.name} was created after all.` });
+        navigate(workspaceHref(found), { replace: true });
+        return;
+      }
+      setUncertain(null);
+      setCheckResult(`${uncertain.name} wasn't created. You can create it now.`);
+    } catch (error) {
+      setCheckResult(`We still can't tell: ${messageFor(error)}`);
+    } finally {
+      setChecking(false);
+    }
+  };
 
   const previewSlug = slug || slugify(name ?? '') || 'your-workspace';
 
@@ -123,6 +175,25 @@ export function CreateWorkspacePage() {
               {limit ? (
                 <Callout tone="warning" title="Workspace limit reached">
                   {limit} Delete one you own, or ask to be invited to an existing workspace.
+                </Callout>
+              ) : null}
+              {uncertain ? (
+                <Callout
+                  tone="warning"
+                  title="We couldn't confirm whether it was created"
+                  action={
+                    <Button size="sm" variant="secondary" loading={checking} onClick={() => void checkCreated()}>
+                      {checking ? null : <SearchCheck />}
+                      Check my workspaces
+                    </Button>
+                  }
+                >
+                  The connection dropped before AgentVault answered, so {uncertain.name} may already exist. Check before
+                  trying again, so you don't end up with two.
+                </Callout>
+              ) : checkResult ? (
+                <Callout tone="info" role="status">
+                  {checkResult}
                 </Callout>
               ) : null}
               <fieldset disabled={!!limit} className="grid gap-5 disabled:opacity-60">
@@ -171,7 +242,7 @@ export function CreateWorkspacePage() {
                 <WorkspaceTile name={name || 'Workspace'} seed={previewSlug} size="sm" />
                 <span className="truncate font-mono">/w/{previewSlug}</span>
               </p>
-              <Button type="submit" loading={isSubmitting} disabled={!!limit}>
+              <Button type="submit" loading={isSubmitting} disabled={!!limit || !!uncertain}>
                 Create workspace
                 {isSubmitting ? null : <ArrowRight />}
               </Button>

@@ -7,24 +7,24 @@ import { canActOn } from '@/lib/rbac/rules';
 import { useWorkspace } from './workspace-context';
 
 export interface WorkspaceAccess {
-  /** Your membership in this workspace (E26). */
-  membership: Member;
-  /** Your rank: the highest priority among your roles. */
+  /** Your membership in this workspace, when it could be read (a platform admin may have none). */
+  membership: Member | null;
+  /** Your rank: the highest priority among your roles; -1 without a membership. */
   myPriority: number;
-  /** Your permissions as concrete catalogue keys (wildcards expanded). */
+  /** Your permissions as concrete catalogue keys. */
   myPermissions: ReadonlySet<string>;
   /** Every permission key in the catalogue. */
   catalogueKeys: readonly string[];
   /** False until the catalogue has loaded. */
   ready: boolean;
-  /** Rule 1 (§3.2): not yourself, and only members ranked strictly below you. */
+  /** Rule 1: not yourself, and only members ranked strictly below you. */
   canActOn: (target: Pick<Member, 'id' | 'highestRolePriority'>) => boolean;
 }
 
 /**
- * The inputs of the anti-escalation rules (spec §3.3), computed once per render
- * of the workspace. When your permissions are unknown (your roles can't read the
- * role list) every catalogue key is assumed and the server decides.
+ * The inputs of the anti-escalation rules, computed once per render of the
+ * workspace. Permissions come from contextual /auth/me (already concrete); without
+ * a readable membership, rank-based actions are not offered and the server decides.
  */
 export function useAccess(): WorkspaceAccess {
   const workspace = useWorkspace();
@@ -32,16 +32,15 @@ export function useAccess(): WorkspaceAccess {
 
   return useMemo(() => {
     const catalogueKeys = catalogue.data?.permissions.map((permission) => permission.key) ?? [];
-    const granted = workspace.permissions.keys;
-    const myPermissions = new Set(granted === null ? catalogueKeys : expandPermissions(granted, catalogueKeys));
+    const myPermissions = new Set(expandPermissions(workspace.permissions, catalogueKeys));
     const membership = workspace.membership;
     return {
       membership,
-      myPriority: membership.highestRolePriority,
+      myPriority: membership?.highestRolePriority ?? -1,
       myPermissions,
       catalogueKeys,
       ready: !!catalogue.data,
-      canActOn: (target) => canActOn(membership, target),
+      canActOn: (target) => (membership ? canActOn(membership, target) : false),
     };
   }, [workspace.permissions, workspace.membership, catalogue.data]);
 }

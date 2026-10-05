@@ -44,14 +44,15 @@ export function HomePage() {
     <div className="grid gap-8">
       <header className="animate-rise">
         <p className="text-[13px] text-muted">
-          {greeting} · {workspace.name} · <span className="text-ink-soft">{primaryRoleLabel(workspace.membership)}</span>
+          {greeting} · {workspace.name} ·{' '}
+          <span className="text-ink-soft">{primaryRoleLabel(workspace.membership, workspace.summary)}</span>
         </p>
         <h1 className="mt-2 font-display text-[40px] leading-[1.05] tracking-[-0.01em] text-ink sm:text-[46px]">
-          Welcome, {me?.displayName ?? workspace.membership.displayName}.
+          Welcome, {me?.displayName ?? workspace.membership?.displayName ?? 'back'}.
         </h1>
         <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted">
           This is your workspace's command center. Your team, roles, security policy and document vault are ready to set up;
-          agents and workflows arrive in the coming phases.
+          agents arrive in Phase 4, and workflows, audit and analytics in Phase 5.
         </p>
       </header>
 
@@ -179,7 +180,7 @@ function GettingStarted() {
       title: 'Design a workflow',
       description: 'Chain agents and tools on a visual canvas.',
       state: 'soon',
-      phase: 6,
+      phase: 5,
     },
   ];
 
@@ -330,7 +331,22 @@ function VaultCard() {
 // ── Membership ──────────────────────────────────────────────────────────────
 
 function MembershipCard() {
-  const { membership } = useWorkspace();
+  const { membership, summary } = useWorkspace();
+
+  if (!membership) {
+    return (
+      <Card>
+        <CardHeader title="Your membership" />
+        <CardBody>
+          <Badge tone="outline">{primaryRoleLabel(null, summary)}</Badge>
+          <p className="mt-3 text-[13px] leading-relaxed text-muted">
+            Your membership details couldn't be loaded. Your permissions below still come straight from the server.
+          </p>
+        </CardBody>
+      </Card>
+    );
+  }
+
   // The owner badge already says "Owner"; don't repeat the built-in owner role.
   const roles = [...membership.roles]
     .filter((role) => !(membership.isOwner && role.slug === 'owner'))
@@ -351,7 +367,7 @@ function MembershipCard() {
             <Badge key={role.id} tone="outline">
               <span
                 className="size-2 rounded-full"
-                style={{ backgroundColor: role.color ?? 'var(--color-faint)' }}
+                style={{ backgroundColor: safeColor(role.color) ?? 'var(--color-faint)' }}
                 aria-hidden
               />
               {role.name}
@@ -367,6 +383,11 @@ function MembershipCard() {
       </CardBody>
     </Card>
   );
+}
+
+/** Role colours are user data: only plain hex colours reach a style attribute. */
+function safeColor(color: string | null): string | null {
+  return color && /^#[0-9a-f]{3,8}$/i.test(color) ? color : null;
 }
 
 // ── Workspace details ───────────────────────────────────────────────────────
@@ -438,42 +459,50 @@ function AccessCard() {
   const workspace = useWorkspace();
   const can = useCan();
   const catalogue = useQuery(permissionCatalogueQuery);
-  const snapshot = workspace.permissions;
+  const keys = workspace.permissions;
 
-  const categories = catalogue.data
+  // The catalogue gives categories and descriptions. Without it (it failed, or is
+  // loading) the server's own keys still show what you can do, grouped by resource.
+  const categories: Array<[string, PermissionDefinition[]]> = catalogue.data
     ? Object.entries(
         catalogue.data.permissions.reduce<Record<string, PermissionDefinition[]>>((groups, permission) => {
           (groups[permission.category] ??= []).push(permission);
           return groups;
         }, {}),
       )
-    : [];
-  const grantedTotal = catalogue.data?.permissions.filter((permission) => can(permission.key)).length ?? 0;
+    : Object.entries(
+        keys.reduce<Record<string, PermissionDefinition[]>>((groups, key) => {
+          const resource = key.split(':')[0] ?? key;
+          (groups[resource] ??= []).push({
+            key,
+            resource,
+            action: key.slice(resource.length + 1),
+            category: resource,
+            description: '',
+            isDangerous: false,
+            phase: 0,
+          });
+          return groups;
+        }, {}),
+      );
+  const total = catalogue.data?.permissions.length;
 
   return (
     <Card>
       <CardHeader
         title="Your access"
         description={
-          snapshot.keys === null
-            ? 'Resolved by the server on every request.'
-            : catalogue.data
-              ? `${grantedTotal} of ${catalogue.data.permissions.length} permissions in this workspace, from your ${pluralize(workspace.membership.roles.length, 'role')}.`
-              : 'What your roles allow in this workspace.'
-        }
-        actions={
-          snapshot.source === 'server' ? (
-            <Badge tone="info">From server</Badge>
-          ) : snapshot.source === 'computed' ? (
-            <Badge tone="neutral">Computed from roles</Badge>
-          ) : null
+          keys.length === 0
+            ? 'Your roles grant no permissions in this workspace yet.'
+            : total
+              ? `${catalogue.data!.permissions.filter((permission) => can(permission.key)).length} of ${total} permissions in this workspace, as the server resolved them for your roles.`
+              : `${pluralize(keys.length, 'permission')} in this workspace, as the server resolved them for your roles.`
         }
       />
       <CardBody>
-        {snapshot.keys === null ? (
-          <Callout tone="neutral" title="Your exact permissions can't be shown here">
-            Your role can't read this workspace's role list, so AgentVault shows every section and lets the server decide
-            on each request. Anything you're not allowed to do will say so.
+        {keys.length === 0 ? (
+          <Callout tone="neutral" title="Nothing to show yet">
+            You can still manage your own account. Ask a workspace admin for a role if you need access to something here.
           </Callout>
         ) : catalogue.isPending ? (
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -481,8 +510,6 @@ function AccessCard() {
               <Skeleton key={index} className="h-16 rounded-lg" />
             ))}
           </div>
-        ) : catalogue.isError ? (
-          <ErrorState compact error={catalogue.error} onRetry={() => void catalogue.refetch()} />
         ) : (
           <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {categories.map(([category, permissions]) => (

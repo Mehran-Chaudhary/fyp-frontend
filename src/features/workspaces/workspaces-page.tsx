@@ -1,23 +1,33 @@
 import { useQuery } from '@tanstack/react-query';
-import { ArrowRight, Building2, ChevronLeft, ChevronRight, Crown, Plus, Users } from 'lucide-react';
+import { ArrowRight, Building2, ChevronLeft, ChevronRight, Crown, MailOpen, Plus, Users } from 'lucide-react';
 import { useState } from 'react';
 import { Link } from 'react-router';
 import { EmptyState, ErrorState, PageHeader } from '@/components/feedback/states';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Callout } from '@/components/ui/callout';
 import { Skeleton, WorkspaceTile } from '@/components/ui/misc';
 import type { OrganizationWithMembership } from '@/lib/api/types';
+import { workspaceHref } from '@/lib/auth/landing';
+import { readLinkToken } from '@/lib/auth/link-tokens';
 import { useDocumentTitle } from '@/lib/hooks';
-import { workspacesQuery } from '@/lib/queries';
-import { STORAGE_KEYS, storage } from '@/lib/storage';
+import { meQuery, workspacesQuery } from '@/lib/queries';
+import { lastWorkspace } from '@/lib/storage';
 import { cn, formatDate, humanizeSlug, pluralize } from '@/lib/utils';
 
-/** The user's workspaces (spec §7.8, E23). */
+/**
+ * The workspace picker (P1-API-22): every workspace you belong to, a page at a
+ * time, newest membership first. It reads /organizations rather than the 100
+ * memberships embedded in /auth/me, so nothing is ever left out. Listed doesn't
+ * mean enterable: a suspended workspace or a policy is checked on entry.
+ */
 export function WorkspacesPage() {
   useDocumentTitle('Workspaces');
   const [page, setPage] = useState(1);
   const query = useQuery(workspacesQuery(page));
-  const lastSlug = storage.get(STORAGE_KEYS.lastWorkspace);
+  const { data: me } = useQuery(meQuery);
+  const lastId = me ? lastWorkspace.get(me.id) : null;
+  const invitation = readLinkToken('invitation');
 
   const createButton = (
     <Button asChild>
@@ -37,6 +47,21 @@ export function WorkspacesPage() {
         description="Each workspace is an isolated tenant: its agents, documents, workflows and logs never cross into another."
         actions={query.data && query.data.items.length > 0 ? createButton : null}
       />
+
+      {invitation ? (
+        <Callout
+          tone="info"
+          icon={<MailOpen className="size-4" />}
+          title={`You have an invitation${invitation.meta?.workspaceName ? ` to ${invitation.meta.workspaceName}` : ''}`}
+          action={
+            <Button asChild size="sm">
+              <Link to="/invitations/accept">Review invitation</Link>
+            </Button>
+          }
+        >
+          Accept it to join that workspace.
+        </Callout>
+      ) : null}
 
       {query.isPending ? (
         <ul className="grid gap-3 sm:grid-cols-2">
@@ -76,7 +101,7 @@ export function WorkspacesPage() {
           <ul className={cn('grid gap-3 sm:grid-cols-2 transition-opacity', query.isPlaceholderData && 'opacity-60')}>
             {query.data.items.map((workspace) => (
               <li key={workspace.id}>
-                <WorkspaceCard workspace={workspace} lastUsed={workspace.slug === lastSlug} />
+                <WorkspaceCard workspace={workspace} lastUsed={workspace.id === lastId} />
               </li>
             ))}
           </ul>
@@ -120,7 +145,7 @@ function WorkspaceCard({ workspace, lastUsed }: { workspace: OrganizationWithMem
 
   return (
     <Link
-      to={`/w/${workspace.slug}`}
+      to={workspaceHref(workspace)}
       className="group flex h-full flex-col rounded-xl border border-line bg-surface p-5 shadow-card transition-[border-color,box-shadow,transform] duration-150 hover:-translate-y-px hover:border-line-strong hover:shadow-[0_6px_20px_-12px_rgb(28_27_24/0.25)]"
     >
       <div className="flex items-start gap-3.5">

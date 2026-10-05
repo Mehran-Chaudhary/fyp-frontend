@@ -72,7 +72,7 @@ function TransferFlow({
   const candidates = useQuery(
     membersQuery(workspace.id, { status: 'ACTIVE', limit: 50, sortBy: 'name', sortDirection: 'ASC', ...(debounced ? { search: debounced } : {}) }),
   );
-  const list = (candidates.data?.items ?? []).filter((member) => member.id !== access.membership.id);
+  const list = (candidates.data?.items ?? []).filter((member) => member.id !== access.membership?.id);
 
   const transfer = useMutation({
     mutationFn: (member: Member) => workspaceApi.transferOwnership(workspace.id, member.userId),

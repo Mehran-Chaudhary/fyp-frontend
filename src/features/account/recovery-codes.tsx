@@ -7,7 +7,7 @@ import { APP_NAME } from '@/lib/env';
 import { downloadTextFile, formatDateTime } from '@/lib/utils';
 
 /**
- * The ten one-time recovery codes (spec §7.13 step 3). They are shown exactly
+ * One-time recovery codes (P1-API-06, P1-API-08). They are shown exactly
  * once, so the user must confirm they saved them before closing.
  */
 export function RecoveryCodesPanel({

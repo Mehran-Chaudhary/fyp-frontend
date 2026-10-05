@@ -23,11 +23,15 @@ export interface SectionDefinition {
   bullets: string[];
 }
 
-/** Sections from phases up to this one are built; later ones show a placeholder. */
+/**
+ * Sections from phases up to this one are built; later ones are labelled as planned
+ * and make no backend calls (Phase 1 spec §5 "Permission-driven UI"). Phases follow
+ * the five-phase delivery plan (docs/FRONTEND_PHASES.md).
+ */
 export const LIVE_PHASE = 3;
 
 /**
- * Workspace sections. A section shows a placeholder until its phase ships; the
+ * Workspace sections. A section shows a "planned" page until its phase ships; the
  * permission that reveals it is final.
  */
 export const SECTIONS: Record<SectionKey, SectionDefinition> = {
@@ -51,7 +55,7 @@ export const SECTIONS: Record<SectionKey, SectionDefinition> = {
     label: 'Workflows',
     icon: GitBranch,
     anyOf: ['workflow:read'],
-    phase: 6,
+    phase: 5,
     group: 'build',
     summary:
       'Chain agents, tools and data sources on a visual canvas, then run them as background jobs that hand work from one agent to the next.',
@@ -81,7 +85,7 @@ export const SECTIONS: Record<SectionKey, SectionDefinition> = {
     label: 'Audit logs',
     icon: ScrollText,
     anyOf: ['audit:read'],
-    phase: 8,
+    phase: 5,
     group: 'govern',
     summary:
       'An immutable record of every agent action, tool call, data access, permission denial and redaction, filterable for compliance reviews.',

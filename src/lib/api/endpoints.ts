@@ -1,3 +1,4 @@
+import { withAuthLock } from './auth-lock';
 import { call, callPaginated, download, request, workspacePath } from './client';
 import type {
   AcceptInvitationResponse,
@@ -58,117 +59,126 @@ import type {
 } from './types';
 
 /**
- * One function per backend endpoint (Phase 1 spec §8, E1–E29; Phase 2 spec §6,
- * E30–E59). Components never call `fetch` directly.
+ * One function per backend endpoint. Components never call `fetch` directly.
+ * Phase 1 operations carry their register id (spec §9, P1-API-nn).
  */
 export const authApi = {
-  /** E1 */
+  /**
+   * P1-API-01. Sets the refresh cookie, so it runs under the auth lock: no other tab
+   * may present the old cookie while it changes. Never retried automatically.
+   */
   register: (body: RegisterRequest) =>
-    request<AuthResponse>('/auth/register', { method: 'POST', body, auth: false }),
+    withAuthLock(() => request<AuthResponse>('/auth/register', { method: 'POST', body, auth: false })),
 
-  /** E2. Two success shapes: signed in, or a second factor is needed. */
-  login: (body: LoginRequest) => request<LoginResponse>('/auth/login', { method: 'POST', body, auth: false }),
+  /** P1-API-02. Two success shapes: signed in, or a second factor is needed. */
+  login: (body: LoginRequest) =>
+    withAuthLock(() => request<LoginResponse>('/auth/login', { method: 'POST', body, auth: false })),
 
-  /** E3 */
+  /** P1-API-03 */
   verifyMfa: (body: MfaVerifyRequest) =>
-    call<AuthResponse>('/auth/mfa/verify', { method: 'POST', body, auth: false }),
+    withAuthLock(() => call<AuthResponse>('/auth/mfa/verify', { method: 'POST', body, auth: false })),
 
-  /** E5. No refresh-and-retry: sign-out cleans up locally whatever happens. */
-  logout: () =>
+  /**
+   * P1-API-10. Takes the token explicitly: the caller holds the auth lock, and a
+   * refresh here would wait for that same lock.
+   */
+  logout: (accessToken: string) =>
     call<{ revokedSessions: number }>('/auth/logout', {
       method: 'POST',
       body: {},
-      authRetry: false,
+      bearer: accessToken,
       globalErrors: false,
     }),
 
-  /** E6 */
-  logoutAll: () => call<{ revokedSessions: number }>('/auth/logout-all', { method: 'POST' }),
+  /** P1-API-11. Same lock rule as logout. */
+  logoutAll: (accessToken: string) =>
+    call<{ revokedSessions: number }>('/auth/logout-all', { method: 'POST', body: {}, bearer: accessToken }),
 
-  /** E7. `workspaceId` asks for effective permissions (ignored until BF-1 is fixed). */
-  me: (workspaceId?: string) => call<CurrentUser>('/auth/me', { workspaceId, globalErrors: !workspaceId }),
+  /**
+   * P1-API-12. Without a workspace: your identity and first 100 memberships. With
+   * one (UUID or slug): the same, plus that workspace's canonical id and your
+   * concrete permissions in it, after its access checks (membership, suspension,
+   * IP allowlist, MFA and email policy). The caller handles those refusals.
+   */
+  me: (workspaceId?: string, signal?: AbortSignal) =>
+    call<CurrentUser>('/auth/me', { workspaceId, signal, globalErrors: !workspaceId }),
 
-  /** E8. Send only the changed fields. */
+  /** P1-API-13. Send only the changed fields. Returns `{ id, displayName }` only. */
   updateMe: (body: UpdateProfileRequest) => call<UpdateProfileResponse>('/auth/me', { method: 'PATCH', body }),
 
-  /** E9 */
+  /** P1-API-14. Public: works while the email gate blocks everything else. */
   verifyEmail: (token: string) =>
-    call<{ verified: true }>('/auth/verify-email', { method: 'POST', body: { token }, auth: false }),
+    call<{ verified: boolean }>('/auth/verify-email', { method: 'POST', body: { token }, auth: false }),
 
-  /** E10. Always `{ sent: true }` (anti-enumeration). */
+  /** P1-API-15. Always `{ sent: true }`: it never says whether the address exists. */
   resendVerification: (email: string) =>
     call<{ sent: true }>('/auth/resend-verification', { method: 'POST', body: { email }, auth: false }),
 
-  /** E11. Always `{ sent: true }`. */
+  /** P1-API-16. Always `{ sent: true }`. */
   forgotPassword: (email: string) =>
     call<{ sent: true }>('/auth/forgot-password', { method: 'POST', body: { email }, auth: false }),
 
-  /** E12 */
+  /** P1-API-17. Revokes every session and clears the cookie. */
   resetPassword: (body: { token: string; password: string }) =>
     call<{ reset: true }>('/auth/reset-password', { method: 'POST', body, auth: false }),
 
-  /** E13. The cookie tells the server which device to keep signed in. */
+  /** P1-API-18. The cookie tells the server which device to keep signed in. */
   changePassword: (body: ChangePasswordRequest) =>
     call<ChangePasswordResponse>('/auth/change-password', { method: 'POST', body }),
 
-  /** E14 */
-  sessions: () => call<Session[]>('/auth/sessions'),
+  /** P1-API-19. One row per device, not paginated. */
+  sessions: (signal?: AbortSignal) => call<Session[]>('/auth/sessions', { signal }),
 
-  /** E15 */
+  /** P1-API-20. The session id, never a user or family id. */
   revokeSession: (sessionId: string) =>
     call<{ revoked: number }>(`/auth/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
 
-  /** E16 */
-  mfaStatus: () => call<MfaStatus>('/auth/mfa'),
+  /** P1-API-04 */
+  mfaStatus: (signal?: AbortSignal) => call<MfaStatus>('/auth/mfa', { signal }),
 
-  /** E17 */
+  /** P1-API-05. Creates or replaces the pending secret; never retried automatically. */
   mfaSetup: (password: string) => call<MfaSetup>('/auth/mfa/setup', { method: 'POST', body: { password } }),
 
-  /** E18 */
+  /** P1-API-06 */
   mfaEnable: (code: string) => call<MfaEnableResponse>('/auth/mfa/enable', { method: 'POST', body: { code } }),
 
-  /** E19 */
+  /** P1-API-07. Exactly one factor. */
   mfaDisable: (body: { password: string } & SecondFactor) =>
     call<{ disabled: true }>('/auth/mfa/disable', { method: 'POST', body }),
 
-  /** E20. Authenticator code only. */
+  /** P1-API-08. Authenticator code only. */
   regenerateRecoveryCodes: (body: { password: string; code: string }) =>
     call<{ recoveryCodes: string[] }>('/auth/mfa/recovery-codes', { method: 'POST', body }),
 
-  /** E21. A raw file, not an envelope. */
+  /** Phase 5 (account lifecycle controller). A raw file, not an envelope. */
   exportPersonalData: () => download('/auth/me/export'),
 
-  /** E22. A JSON body on a DELETE. */
+  /** Phase 5 (account lifecycle controller). A JSON body on a DELETE. */
   eraseAccount: (body: EraseAccountRequest) => call<ErasureOutcome>('/auth/me', { method: 'DELETE', body }),
 };
 
 export const organizationsApi = {
-  /** E23. Newest membership first. */
-  list: (page: number, limit = 20) =>
-    callPaginated<OrganizationWithMembership>('/organizations', { query: { page, limit } }),
+  /** P1-API-22. Newest membership first; page/limit only (limit ≤ 100). */
+  list: (page: number, limit = 20, signal?: AbortSignal) =>
+    callPaginated<OrganizationWithMembership>('/organizations', { query: { page, limit }, signal }),
 
-  /** E24. The slug may come back with a random suffix: always use the returned one. */
+  /** P1-API-21. The slug may come back with a random suffix: always use the returned one. */
   create: (body: CreateOrganizationRequest) => call<Organization>('/organizations', { method: 'POST', body }),
 
-  /** E25. Needs `workspace:read`. */
-  get: (workspaceId: string) => {
+  /** P1-API-23. Needs `workspace:read`. */
+  get: (workspaceId: string, signal?: AbortSignal) => {
     const [path, scope] = workspacePath(workspaceId);
-    return call<Organization>(path, scope);
-  },
-
-  /** E26. Needs no permission: the workspace gate's access probe. */
-  myMembership: (workspaceId: string) => {
-    const [path, scope] = workspacePath(workspaceId, '/members/me');
-    return call<Member>(path, scope);
+    return call<Organization>(path, { ...scope, signal });
   },
 
   /**
-   * E27. Needs `role:read`. Used only by the permission fallback (§5.2), which
-   * treats a 403 as "unknown", so global error handling is off.
+   * P1-API-24. No permission needed. A platform admin entering without a
+   * membership has none to read (the server answers 500), so this is never a
+   * gate: the workspace works without it.
    */
-  roles: (workspaceId: string) => {
-    const [path, scope] = workspacePath(workspaceId, '/roles');
-    return call<Role[]>(path, { ...scope, globalErrors: false });
+  myMembership: (workspaceId: string, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, '/members/me');
+    return call<Member>(path, { ...scope, signal, globalErrors: false });
   },
 };
 
@@ -310,13 +320,14 @@ export const invitationsApi = {
     return call<Invitation>(path, { ...scope, method: 'DELETE' });
   },
 
-  /** E49. Public; shares the per-IP `auth` throttle, so call it once per page load. */
+  /** P1-API-25. Public; shares the `auth` throttle, so call it once per page load. The email is masked. */
   preview: (token: string) =>
     call<InvitationPreview>('/invitations/preview', { query: { token }, auth: false, globalErrors: false }),
 
   /**
-   * E50. Bearer but no workspace header. INVITATION_EMAIL_MISMATCH is a 401 that
-   * is not about the session: the client only refreshes on the four token codes.
+   * P1-API-26. Bearer but no workspace header: you aren't a member yet.
+   * INVITATION_EMAIL_MISMATCH is a 401 about the invitation, not the session, so it
+   * never triggers a refresh. Never retried automatically.
    */
   accept: (token: string) =>
     call<AcceptInvitationResponse>('/invitations/accept', { method: 'POST', body: { token }, globalErrors: false }),

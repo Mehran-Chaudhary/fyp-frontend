@@ -29,6 +29,10 @@ export function AuthLayout() {
           <span>© {YEAR} AgentVault</span>
           <span aria-hidden>·</span>
           <span>Private AI agent infrastructure</span>
+          <span aria-hidden>·</span>
+          <Link to="/status" className="rounded-sm hover:text-muted hover:underline hover:underline-offset-4">
+            Service status
+          </Link>
         </footer>
       </main>
     </div>
@@ -161,14 +165,11 @@ function Token({ children }: { children: ReactNode }) {
   return <span className="rounded bg-brand-50 px-1 py-px text-brand-800 ring-1 ring-brand-200">{children}</span>;
 }
 
-/**
- * "Sign in | Create account" switch. Keeps `next` (and an invitation's masked
- * `hint`) so invitation links survive the round trip.
- */
+/** "Sign in | Create account" switch. Keeps `next`, so a deep link survives the round trip. */
 export function AuthTabs({ active }: { active: 'sign-in' | 'sign-up' }) {
   const [params] = useSearchParams();
   const kept = new URLSearchParams();
-  for (const key of ['next', 'hint']) {
+  for (const key of ['next']) {
     const value = params.get(key);
     if (value) kept.set(key, value);
   }

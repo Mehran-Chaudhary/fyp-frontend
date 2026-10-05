@@ -5,11 +5,16 @@ import { GoodbyePage } from '@/features/misc/goodbye-page';
 import { NotFoundPage } from '@/features/misc/not-found-page';
 import { RootErrorBoundary } from '@/features/misc/root-error';
 import { RootLayout } from '@/features/misc/root-layout';
+import { linkTokenLoader } from '@/lib/auth/link-tokens';
+import { Alias } from './alias';
 import { PublicOnly, RequireAuth, RootRedirect } from './guards';
 
 /**
- * Route table (spec §6.1). Paths under /auth/reset-password, /auth/verify-email and
- * /invitations/accept are fixed: the backend emails links to them.
+ * Route table (Phase 1 spec §6). /auth/verify-email, /auth/reset-password and
+ * /invitations/accept are fixed: the backend emails links to them. Their loaders
+ * move the link token out of the address bar before anything renders, and they
+ * work on direct navigation and reload. The spec's other route names
+ * (/auth/login, /auth/register, …) are aliases of the routes here.
  */
 export const router = createBrowserRouter([
   {
@@ -20,9 +25,19 @@ export const router = createBrowserRouter([
       { index: true, element: <RootRedirect /> },
 
       {
+        // Public diagnostics: the three health probes, on demand (P1-API-27–29).
+        path: 'status',
+        lazy: () => import('@/features/misc/status-page').then((m) => ({ Component: m.StatusPage })),
+      },
+
+      {
         path: 'auth',
         children: [
           { index: true, element: <Navigate to="/auth/sign-in" replace /> },
+          { path: 'login', element: <Alias to="/auth/sign-in" /> },
+          { path: 'register', element: <Alias to="/auth/sign-up" /> },
+          // The MFA challenge lives in memory only; a reload restarts sign-in.
+          { path: 'mfa', element: <Alias to="/auth/sign-in" /> },
           {
             element: <PublicOnly />,
             children: [
@@ -53,13 +68,19 @@ export const router = createBrowserRouter([
             children: [
               {
                 path: 'reset-password',
+                loader: linkTokenLoader('reset-password'),
                 lazy: () =>
                   import('@/features/auth/reset-password-page').then((m) => ({ Component: m.ResetPasswordPage })),
               },
               {
                 path: 'verify-email',
+                loader: linkTokenLoader('verify-email'),
                 lazy: () =>
                   import('@/features/auth/verify-email-page').then((m) => ({ Component: m.VerifyEmailPage })),
+              },
+              {
+                path: 'check-email',
+                lazy: () => import('@/features/auth/check-email-page').then((m) => ({ Component: m.CheckEmailPage })),
               },
             ],
           },
@@ -72,6 +93,7 @@ export const router = createBrowserRouter([
         children: [
           {
             path: 'invitations/accept',
+            loader: linkTokenLoader('invitation'),
             lazy: () =>
               import('@/features/invitations/accept-invitation-page').then((m) => ({
                 Component: m.AcceptInvitationPage,
@@ -116,6 +138,8 @@ export const router = createBrowserRouter([
                 path: 'security',
                 lazy: () => import('@/features/account/security-page').then((m) => ({ Component: m.SecurityPage })),
               },
+              { path: 'security/mfa', element: <Alias to="/account/security" hash="#two-step" /> },
+              { path: 'security/sessions', element: <Alias to="/account/security" hash="#devices" /> },
               {
                 path: 'privacy',
                 lazy: () => import('@/features/account/privacy-page').then((m) => ({ Component: m.PrivacyPage })),
@@ -123,6 +147,7 @@ export const router = createBrowserRouter([
             ],
           },
           {
+            // :workspaceSlug is a slug or the canonical UUID; the gate resolves both.
             path: 'w/:workspaceSlug',
             lazy: () =>
               import('@/features/workspaces/workspace-gate').then((m) => ({ Component: m.WorkspaceGate })),

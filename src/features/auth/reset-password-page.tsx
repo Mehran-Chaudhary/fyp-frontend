@@ -11,6 +11,7 @@ import { PasswordInput } from '@/components/ui/password-input';
 import { authApi } from '@/lib/api/endpoints';
 import { isApiError } from '@/lib/api/errors';
 import { hasActiveSession } from '@/lib/api/token-manager';
+import { clearLinkToken, linkTokenFor } from '@/lib/auth/link-tokens';
 import { endSessionLocally } from '@/lib/auth/session';
 import { applyServerErrors, messageFor } from '@/lib/errors';
 import { useDocumentTitle } from '@/lib/hooks';
@@ -29,11 +30,15 @@ const schema = z
   });
 type Values = z.infer<typeof schema>;
 
-/** Reset password from the emailed link (spec §7.5). */
+/**
+ * /auth/reset-password — the link the backend emails (P1-API-17). The loader
+ * moved the token out of the address bar; it lives only for this flow and
+ * survives a breached-password rejection so another password can be tried.
+ */
 export function ResetPasswordPage() {
   useDocumentTitle('Choose a new password');
   const [params] = useSearchParams();
-  const token = params.get('token');
+  const token = linkTokenFor('reset-password', params);
   const navigate = useNavigate();
   const [linkInvalid, setLinkInvalid] = useState(!token);
   const [rateLimitedUntil, setRateLimitedUntil] = useState<number | null>(null);
@@ -49,6 +54,8 @@ export function ResetPasswordPage() {
     if (!token) return;
     try {
       await authApi.resetPassword({ token, password: newPassword });
+      clearLinkToken('reset-password');
+      form.reset();
       // Every session was revoked and the cookie cleared. If this browser was
       // signed in, clean up locally (no API call).
       if (hasActiveSession()) endSessionLocally('password-reset');
@@ -59,6 +66,7 @@ export function ResetPasswordPage() {
         return;
       }
       if (error.is('TOKEN_NOT_FOUND', 'TOKEN_EXPIRED', 'TOKEN_ALREADY_USED')) {
+        clearLinkToken('reset-password');
         setLinkInvalid(true);
       } else if (error.is('AUTH_PASSWORD_BREACHED')) {
         // The link stays usable: let them try another password.

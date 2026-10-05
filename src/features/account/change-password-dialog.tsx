@@ -10,7 +10,7 @@ import { Field, FormError } from '@/components/ui/field';
 import { PasswordInput } from '@/components/ui/password-input';
 import { authApi } from '@/lib/api/endpoints';
 import { isApiError } from '@/lib/api/errors';
-import { expireTokenAndDelayRefresh, refreshAccessToken } from '@/lib/api/token-manager';
+import { credentialsChanged, hasActiveSession, refreshAccessToken } from '@/lib/api/token-manager';
 import { applyServerErrors, messageFor } from '@/lib/errors';
 import { queryKeys } from '@/lib/queries';
 import { queryClient } from '@/lib/query-client';
@@ -31,7 +31,7 @@ const schema = z
   });
 type Values = z.infer<typeof schema>;
 
-/** Change password (spec §7.13 card 1, E13). */
+/** Change password (P1-API-18). */
 export function ChangePasswordDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -83,16 +83,24 @@ function ChangePasswordForm({ onDone }: { onDone: () => void }) {
       return;
     }
 
-    // The token in memory is dead now (every token issued before this second was
-    // invalidated). Hold every tab's next refresh for 1.1 s (BF-3), then refresh
-    // once; requests made meanwhile queue behind it (spec §4.7).
+    // The server cut off every access token issued before the change, this tab's
+    // included. The refresh cookie's family was kept, so one explicit, coordinated
+    // refresh renews this session (spec §4 "Credential changes"); other tabs of
+    // this browser learn the old token is dead and renew on their next request.
     setFinishing(true);
-    expireTokenAndDelayRefresh();
+    form.reset();
+    credentialsChanged();
+    let renewed: string | null = null;
     try {
-      await refreshAccessToken();
+      renewed = await refreshAccessToken();
     } catch {
-      /* throttled or offline: the global screens take over and the session is kept */
+      // Offline or throttled: the session is kept and renews on the next request.
     }
+    if (renewed === null && !hasActiveSession()) {
+      // The refresh was refused (no cookie travelled): sign in with the new password.
+      return;
+    }
+    void queryClient.invalidateQueries({ queryKey: queryKeys.me });
     void queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
     toast.success('Password changed', {
       description:

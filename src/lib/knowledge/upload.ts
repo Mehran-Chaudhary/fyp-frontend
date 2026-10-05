@@ -36,7 +36,7 @@ export interface UploadResult extends UploadRateLimit {
 
 /** An upload the server refused, with the rate-limit headers of that answer. */
 export class UploadError extends ApiError {
-  readonly rateLimit: UploadRateLimit;
+  readonly uploadRateLimit: UploadRateLimit;
 
   constructor(error: ApiError, rateLimit: UploadRateLimit) {
     super({
@@ -46,9 +46,14 @@ export class UploadError extends ApiError {
       details: error.details,
       requestId: error.requestId,
       retryAfterSeconds: error.retryAfterSeconds,
+      rateLimit: {
+        remaining: rateLimit.remaining ?? undefined,
+        resetAt: rateLimit.resetAt ?? undefined,
+      },
+      source: error.source,
     });
     this.name = 'UploadError';
-    this.rateLimit = rateLimit;
+    this.uploadRateLimit = rateLimit;
   }
 }
 
@@ -139,8 +144,9 @@ function send(url: string, form: FormData, token: string, options: UploadOptions
     xhr.ontimeout = () =>
       reject(
         new ApiError({
-          status: 408,
-          code: 'REQUEST_TIMEOUT',
+          status: 0,
+          source: 'client',
+          code: 'NETWORK_TIMEOUT',
           message: 'The upload took too long. Try a faster connection or a smaller file.',
         }),
       );

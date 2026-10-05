@@ -1,8 +1,8 @@
 import { invalidateKnowledgeAccess } from '../knowledge/cache';
-import { queryKeys } from '../queries';
+import { meQuery, queryKeys } from '../queries';
 import { queryClient } from '../query-client';
-import { STORAGE_KEYS, storage } from '../storage';
-import { clearWorkspaceBlock } from '../workspace-blocks';
+import { lastWorkspace } from '../storage';
+import { clearAllWorkspaceBlocks, clearWorkspaceBlock } from '../workspace-blocks';
 
 /**
  * What to refetch after each kind of administrative change (Phase 2 spec §9).
@@ -12,13 +12,12 @@ import { clearWorkspaceBlock } from '../workspace-blocks';
 
 /**
  * Your own membership and permissions. Several admin actions can change what you
- * may do (transfer, editing a role you hold). Membership first: the permission
- * loader reads it.
+ * may do (transfer, editing a role you hold): re-read the contextual identity.
  */
 export async function refreshMyAccess(workspaceId: string): Promise<void> {
-  await queryClient.invalidateQueries({ queryKey: queryKeys.membership(workspaceId) });
   await Promise.all([
-    queryClient.invalidateQueries({ queryKey: queryKeys.permissions(workspaceId) }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.membership(workspaceId) }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.context(workspaceId) }),
     queryClient.invalidateQueries({ queryKey: queryKeys.me }),
   ]);
   // Clearance and knowledge-base grants follow roles (Phase 3 §10.4).
@@ -87,12 +86,27 @@ export async function invalidateAfterTransfer(workspaceId: string): Promise<void
  * navigating away, so the workspace gate isn't still mounted to refetch what we
  * drop here.
  */
-export async function forgetWorkspace(workspaceId: string, slug: string): Promise<void> {
-  if (storage.get(STORAGE_KEYS.lastWorkspace) === slug) storage.remove(STORAGE_KEYS.lastWorkspace);
+export async function forgetWorkspace(workspaceId: string): Promise<void> {
+  const userId = queryClient.getQueryData(meQuery.queryKey)?.id;
+  if (userId) lastWorkspace.clear(userId, workspaceId);
   queryClient.removeQueries({ queryKey: queryKeys.ws(workspaceId) });
+  queryClient.removeQueries({ queryKey: ['workspace-ref'] });
   clearWorkspaceBlock(workspaceId);
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: queryKeys.me }),
     queryClient.invalidateQueries({ queryKey: queryKeys.workspaces }),
   ]);
+}
+
+/**
+ * Your account's security changed (MFA turned on or off, email verified): every
+ * workspace re-checks its policies against the new state on next use, and any
+ * block it recorded is lifted until then.
+ */
+export async function revalidateWorkspaceAccess(): Promise<void> {
+  clearAllWorkspaceBlocks();
+  queryClient.removeQueries({ queryKey: ['workspace-ref'] });
+  await queryClient.invalidateQueries({
+    predicate: (query) => query.queryKey[0] === 'ws' && query.queryKey[2] === 'context',
+  });
 }

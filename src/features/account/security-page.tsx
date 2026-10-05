@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { ArrowRight, KeyRound, LogOut, RefreshCw, ShieldCheck, ShieldOff, Smartphone } from 'lucide-react';
-import { useState } from 'react';
-import { Link, useSearchParams } from 'react-router';
+import { useEffect, useState } from 'react';
+import { Link, useLocation, useSearchParams } from 'react-router';
 import { ErrorState, PageHeader } from '@/components/feedback/states';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -9,9 +9,8 @@ import { Callout } from '@/components/ui/callout';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogHeader } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/misc';
-import { authApi } from '@/lib/api/endpoints';
 import { safeNext } from '@/lib/auth/landing';
-import { endSessionLocally } from '@/lib/auth/session';
+import { signOutEverywhere } from '@/lib/auth/session';
 import { useDocumentTitle } from '@/lib/hooks';
 import { meQuery, mfaQuery } from '@/lib/queries';
 import { toastError } from '@/lib/toast';
@@ -20,23 +19,37 @@ import { ChangePasswordDialog } from './change-password-dialog';
 import { DevicesCard } from './devices-card';
 import { DisableMfaDialog, EnableMfaDialog, RegenerateCodesDialog } from './mfa-dialogs';
 
-/** Account → Security (spec §7.13). */
+/**
+ * Account → Security: password, two-step verification and devices, each loading
+ * and failing on its own (Phase 1 spec §6). Needs only a session, never a
+ * workspace, so a workspace's MFA policy can always be satisfied from here.
+ */
 export function SecurityPage() {
   useDocumentTitle('Security');
   const [params] = useSearchParams();
+  const { hash } = useLocation();
   const next = safeNext(params.get('next'));
   const mfa = useQuery(mfaQuery);
   const { data: me } = useQuery(meQuery);
-  const nextWorkspace = next?.startsWith('/w/')
-    ? me?.memberships.find((membership) => membership.organizationSlug === next.split('/')[2])
+  const nextSegment = next?.startsWith('/w/') ? decodeURIComponent(next.split('/')[2] ?? '') : null;
+  const nextWorkspace = nextSegment
+    ? me?.memberships.find(
+        (membership) => membership.organizationSlug === nextSegment || membership.organizationId === nextSegment,
+      )
     : undefined;
+
+  // /account/security#devices (and the /account/security/sessions alias) land on the card.
+  useEffect(() => {
+    if (!hash) return;
+    document.getElementById(hash.slice(1))?.scrollIntoView({ block: 'start' });
+  }, [hash]);
 
   return (
     <div className="grid gap-6">
       <PageHeader title="Security" description="Your password, two-step verification and the devices signed in to your account." />
 
       {next && mfa.data ? (
-        mfa.data.enabled ? (
+        mfa.data.enabled && mfa.data.sessionVerified ? (
           <Callout
             tone="success"
             title="You're all set"
@@ -50,6 +63,11 @@ export function SecurityPage() {
             }
           >
             Two-step verification is on for this session.
+          </Callout>
+        ) : mfa.data.enabled ? (
+          <Callout tone="warning" title="Sign in again to continue">
+            Two-step verification is on for your account, but this session started without a code. Sign out and back in
+            with a code to enter {nextWorkspace?.organizationName ?? 'your workspace'}.
           </Callout>
         ) : (
           <Callout tone="warning" title={`${nextWorkspace?.organizationName ?? 'Your workspace'} requires two-step verification`}>
@@ -69,7 +87,7 @@ export function SecurityPage() {
 function PasswordCard() {
   const [open, setOpen] = useState(false);
   return (
-    <Card>
+    <Card id="password" className="scroll-mt-20">
       <CardHeader
         icon={<KeyRound />}
         title="Password"
@@ -93,7 +111,7 @@ function TwoStepCard() {
   const lowCodes = !!status?.enabled && status.recoveryCodesRemaining <= 3;
 
   return (
-    <Card>
+    <Card id="two-step" className="scroll-mt-20">
       <CardHeader
         icon={<Smartphone />}
         title="Two-step verification"
@@ -192,9 +210,8 @@ function Stat({ label, children, tone }: { label: string; children: React.ReactN
 function SignOutEverywhereCard() {
   const [open, setOpen] = useState(false);
   const logoutAll = useMutation({
-    mutationFn: () => authApi.logoutAll(),
-    // Every session, including this one, is revoked: clean up locally.
-    onSuccess: () => endSessionLocally('signed-out-everywhere'),
+    // Revokes every session, this one included, then cleans up every tab.
+    mutationFn: () => signOutEverywhere(),
     onError: (error) => toastError(error, "Couldn't sign out everywhere"),
   });
 

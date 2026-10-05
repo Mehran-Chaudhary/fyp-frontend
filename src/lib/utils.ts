@@ -125,3 +125,25 @@ export function downloadBlob(filename: string, blob: Blob): void {
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
+
+/**
+ * An image URL that is safe to put in `src`: absolute http(s) only. Profile
+ * avatars are free text on the server (the DTO doesn't check URL syntax), so
+ * anything else, `javascript:` and `data:` included, falls back to initials.
+ */
+export function safeImageUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 2048) return null;
+  try {
+    const url = new URL(trimmed);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The current time, for event handlers that record when something was sent. */
+export function timestamp(): number {
+  return Date.now();
+}

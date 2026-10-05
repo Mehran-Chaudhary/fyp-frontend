@@ -1,7 +1,8 @@
 /**
- * Wire types for the AgentVault backend (spec Appendix A). Every shape here was
- * checked against a running backend. Fields the backend documents but does not yet
- * return are optional (see the BF-* notes).
+ * Wire types for the AgentVault backend: the payloads under an envelope's `data`
+ * (Phase 1 spec §8). Checked against the controllers and services, not only
+ * Swagger. Dates are ISO strings; optional means the field can be absent, which
+ * is not the same as null.
  */
 
 // ── Envelope ────────────────────────────────────────────────────────────────
@@ -45,6 +46,8 @@ export type ApiEnvelope<T> = ApiSuccess<T> | ApiFailure;
 export interface ApiResult<T> {
   data: T;
   meta: ResponseMeta;
+  /** X-RateLimit-* of this response, when the server sent them. */
+  rateLimit?: import('./errors').RateLimitInfo;
 }
 
 export interface Paginated<T> {
@@ -64,7 +67,7 @@ export interface AuthUser {
   emailVerified: boolean;
   isPlatformAdmin: boolean;
   status: UserStatus;
-  /** Present on login / register / mfa-verify, absent on GET /auth/me (BF-5). */
+  /** Whether the ACCOUNT has two-step verification (not whether this session used it). */
   mfaEnabled?: boolean;
 }
 
@@ -116,14 +119,18 @@ export interface MembershipSummary {
   isOwner: boolean;
 }
 
-export interface CurrentUser extends Omit<AuthUser, 'mfaEnabled'> {
+export interface CurrentUser extends AuthUser {
+  /** A URL, '' or null. Render only http(s) URLs (`safeImageUrl`). */
+  avatarUrl: string | null;
+  /** The first 100 memberships only, without pagination: use GET /organizations for the full list. */
   memberships: MembershipSummary[];
-  /** BF-1: documented, not returned today. Used automatically once it is. */
+  /**
+   * Contextual call only (X-Organization-Id): your concrete permission keys in that
+   * workspace, wildcards already expanded. Omitted when empty: treat as [] (spec §5).
+   */
   permissions?: string[];
-  /** BF-1: documented, not returned today. */
+  /** Contextual call only: the workspace's canonical UUID, even when a slug was sent. */
   activeOrganizationId?: string;
-  /** BF-5: documented, not returned today. */
-  avatarUrl?: string | null;
 }
 
 export interface RegisterRequest {
@@ -136,16 +143,20 @@ export interface RegisterRequest {
 export interface LoginRequest {
   email: string;
   password: string;
+  /** Advisory only (UUID v4): it never grants access. */
+  organizationId?: string;
 }
 
 export type MfaVerifyRequest =
   | { challengeToken: string; code: string }
   | { challengeToken: string; recoveryCode: string };
 
+/** Send only what changed. '' clears displayName (your full name shows) and avatarUrl. */
 export interface UpdateProfileRequest {
   firstName?: string;
   lastName?: string;
   displayName?: string;
+  avatarUrl?: string;
 }
 
 export interface UpdateProfileResponse {
@@ -310,11 +321,21 @@ export interface PermissionCatalogue {
   byCategory: Record<string, string[]>;
 }
 
-export interface HealthStatus {
-  status: string;
+/** GET /health/live (P1-API-27). */
+export interface Liveness {
+  status: 'ok';
+  /** Whole seconds. */
   uptime: number;
   environment: string;
   timestamp: string;
+}
+
+/** GET /health/ready and GET /health (P1-API-28/29): Terminus' report. Keys vary by deployment. */
+export interface HealthReport {
+  status: string;
+  info?: Record<string, unknown>;
+  error?: Record<string, unknown>;
+  details: Record<string, unknown>;
 }
 
 // ── Phase 2: workspace administration (spec Appendix A) ─────────────────────
@@ -884,4 +905,4 @@ export type ErrorCode =
   | 'OBJECT_STORAGE_UNAVAILABLE'
   | 'PII_DETECTION_UNAVAILABLE'
   | 'AUTH_SCHEME_NOT_ALLOWED'
-  | 'NETWORK_ERROR'; // client-side only: the request never got an API answer
+  | 'NETWORK_ERROR'; // client-side only (see ClientErrorCode in errors.ts)

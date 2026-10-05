@@ -1,15 +1,18 @@
 # AgentVault — Web
 
 The frontend for **AgentVault**, the Distributed AI Agent Management Platform (FYP, Air
-University Islamabad). This repository implements:
+University Islamabad). Delivery follows the backend team's five-phase plan
+(`docs/frontend/FRONTEND_PHASES.md` in the backend repository):
 
-- **Phase 1: Foundation, Authentication & Workspace Shell**
-  ([`docs/PHASE_1_FOUNDATION_AUTH_WORKSPACE.md`](docs/PHASE_1_FOUNDATION_AUTH_WORKSPACE.md))
-- **Phase 2: Workspace Administration**: team, roles, invitations, API keys and
-  security settings ([`docs/PHASE_2_WORKSPACE_ADMINISTRATION.md`](docs/PHASE_2_WORKSPACE_ADMINISTRATION.md))
-- **Phase 3: Knowledge Bases & Document Vault**: the vault, uploads, the pipeline, document
-  detail, PII reports, knowledge bases and their access grants, and the retrieval playground
-  ([`docs/PHASE_3_KNOWLEDGE_DOCUMENT_VAULT.md`](docs/PHASE_3_KNOWLEDGE_DOCUMENT_VAULT.md))
+- **Phase 1: Identity, Secure Sessions & Workspace Entry**, built to handoff revision 2
+  ([`docs/PHASE_1_FOUNDATION_AUTH_WORKSPACE.md`](docs/PHASE_1_FOUNDATION_AUTH_WORKSPACE.md)).
+  Implementation notes, the acceptance-check status and known limitations are in
+  [`docs/PHASE_1_IMPLEMENTATION_NOTES.md`](docs/PHASE_1_IMPLEMENTATION_NOTES.md).
+- **Phase 2: Workspace Administration & Access Control** (team, roles, invitations, API
+  keys, security settings) and **Phase 3: Knowledge, Document Vault & Privacy** (vault,
+  uploads, document detail, PII reports, knowledge bases and grants, retrieval) were built
+  against earlier handoffs and are kept working on the Phase 1 foundation. Their current
+  handoffs are re-checked when those phases come up for acceptance.
 
 ## Stack
 
@@ -42,8 +45,9 @@ local HTTP cookie settings (`COOKIE_SECURE=false`, `COOKIE_SAME_SITE=lax`, refre
 cookie enabled, no cookie domain). Backend email currently uses Ethereal; check
 its test inbox for verification, reset, and invitation messages.
 
-Check `http://localhost:3000/health/ready` and `http://localhost:3000/docs`, then
-sign in and confirm API requests target port 3000. Confirm login sets the HttpOnly
+Check `http://localhost:3000/health/ready` and `http://localhost:3000/docs` (or open
+`/status` in the app, which runs the three health probes), then sign in and confirm API
+requests target port 3000. Confirm login sets the HttpOnly
 refresh cookie, `/auth/me` succeeds, reloading restores the session through
 `POST /auth/refresh`, and logout ends it. Then test workspace creation, document
 upload, processing, and retrieval. Chat and workflow runs require their frontend
@@ -77,9 +81,11 @@ connect to `http://localhost:3000` with `path: '/realtime'` and
 src/
   app/            router, providers, route guards
   lib/
-    api/          fetch client, typed errors, token manager, endpoint functions, global error handler
-    auth/         session store (boot, sign-in, sign-out), landing and `next` rules
-    permissions/  wildcard expansion (mirrors the server), permission loading, can()
+    api/          fetch client, typed errors, token manager, cross-tab auth lock, endpoint
+                  functions, health probes, global error handler
+    auth/         session store (boot, sign-in, sign-out), landing and `next` rules, email-link
+                  token continuity
+    permissions/  wildcard matching (mirrors the server) and the fail-closed can()
     rbac/         the anti-escalation rules (rank, "grant only what you hold"), mirrored from the server
     workspace/    invitation/API-key status, IP/CIDR matching (copied from the backend), email
                   masking, allowed domains, and what to refetch after each admin change (cache.ts)
@@ -88,10 +94,10 @@ src/
                   placeholders, vault filters, bulk runs, knowledge-layer gaps, and what to
                   refetch after each knowledge change (cache.ts)
     validation/   password policy and slug rules mirrored from the backend, Zod schemas
-    queries.ts    query keys and query options (every workspace key starts with ['ws', id])
+    queries.ts    query keys and options; contextual identity (every workspace key starts with ['ws', id])
   components/     UI kit (ui/), brand, loading/error/empty states (feedback/)
   features/
-    auth/         sign in (+ MFA step), sign up, forgot/reset password, verify email
+    auth/         sign in (+ MFA step), sign up, forgot/reset password, verify email, check email
     workspaces/   workspace list, create, switcher, workspace gate and access states
     shell/        app shell, navigation, home, reserved sections for later phases
     account/      profile, security (password, MFA, devices), privacy (export, erase)
@@ -103,25 +109,45 @@ src/
                   knowledge-bases/ (list, form, settings, access grants), search/ (playground),
                   shared/ (badges, file glyphs, masked text, access hooks)
     invitations/  the public invitation landing page the backend emails
-    misc/         root layout, error boundary, 404, goodbye
+    misc/         root layout, error boundary, 404, goodbye, service status (/status)
 ```
 
-## Things worth knowing before you change auth code
+## Things worth knowing before you change auth code (Phase 1)
 
-- **One refresh at a time, across all tabs.** Refresh tokens rotate and a reused one
-  signs the user out everywhere. `lib/api/token-manager.ts` is the only code that calls
-  `POST /auth/refresh`: single-flight within a tab, a Web Lock across tabs, and the new
-  token is shared over a `BroadcastChannel`. Session restore runs once, outside React,
-  so StrictMode cannot double it.
-- **Refresh on demand only**, never on a timer, and only for the four token 401 codes.
-  Wrong-input 401s (`AUTH_INVALID_CREDENTIALS`, `AUTH_PASSWORD_MISMATCH`, …) never
-  refresh or sign out. A `429` or an outage on refresh keeps the session.
+- **One cookie-changing request at a time, across all tabs.** Refresh tokens rotate and
+  the backend has no grace window: presenting a spent one signs the user out of every
+  device. `lib/api/token-manager.ts` is the only code that calls `POST /auth/refresh`
+  for the session. Refresh, sign-in, registration, MFA sign-in and sign-out all run under
+  one exclusive lock (`lib/api/auth-lock.ts`): Web Locks where the browser has them, a
+  renewed localStorage lease otherwise. A renewed token is shared with the other tabs
+  over a `BroadcastChannel`. Session restore runs once, outside React, so StrictMode
+  can't run it twice.
+- **Late answers can't resurrect a session.** Sign-out moves a session epoch and is
+  broadcast with its time; a refresh answer or a shared token that started before it is
+  discarded. A request waiting on a refresh is not replayed into a different session.
+- **Refresh on demand only**, never on a timer: for `AUTH_TOKEN_EXPIRED` / `MISSING`,
+  and once for `AUTH_TOKEN_REVOKED` (the code the backend also uses after a password
+  change, so the refresh decides). `AUTH_TOKEN_INVALID` ends the session. Wrong-input
+  401s (`AUTH_INVALID_CREDENTIALS`, `AUTH_PASSWORD_MISMATCH`, `MFA_CODE_INVALID`,
+  `INVITATION_EMAIL_MISMATCH`, link-token errors) never refresh or sign out. A 429 or an
+  outage keeps the session; a refresh that **timed out** may have rotated the cookie, so
+  it is never retried automatically: the user chooses to try again or sign in.
+- **Sign-out says when the server didn't confirm it**, and this browser then won't
+  restore the session by itself; the sign-in page offers "Finish signing out".
+- **Permissions come from contextual `/auth/me`** (`X-Organization-Id`), already
+  concrete. Missing keys are not held: `can()` fails closed. The workspace gate re-runs
+  that call on every entry, keys everything by the canonical UUID, cancels the previous
+  workspace's requests, and treats your own membership as optional (a platform admin may
+  have none).
 - **Workspace header = path.** Build workspace calls with `workspacePath(id, …)`, which
-  produces both the URL and `X-Organization-Id` from one value.
-- **Known backend issues** (spec §14) have workarounds in place: permissions are computed
-  from roles until `/auth/me` returns them (BF-1), the refresh after a password change
-  waits 1.1 s (BF-3), and validation keys `Password` / `That` / `property` are mapped
-  to the right field (BF-4).
+  produces both the URL and `X-Organization-Id` from one value. URLs show the slug (slugs
+  never change); `/w/<uuid>` works too and is rewritten to the slug.
+- **Email-link tokens never stay in a URL.** The loaders of `/auth/verify-email`,
+  `/auth/reset-password` and `/invitations/accept` move `?token=` into this tab's
+  sessionStorage for the flow in progress (short expiry, cleared on completion) and
+  replace the history entry. Sign-in and sign-up continue to the token-free route.
+- **Validation errors are keyed by property path** (`password`, `settings.x`); a field
+  the form doesn't own lands in the form-level summary.
 
 ## Things worth knowing before you change admin code (Phase 2)
 

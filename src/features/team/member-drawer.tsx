@@ -94,7 +94,7 @@ export function MemberDrawer() {
 
 function DrawerHeader({ member }: { member: Member }) {
   const access = useAccess();
-  const isYou = member.id === access.membership.id;
+  const isYou = member.id === access.membership?.id;
   return (
     <div className="flex items-center gap-3.5">
       <Avatar name={member.displayName} src={member.avatarUrl} size="lg" muted={member.status === 'REMOVED'} />
@@ -119,7 +119,7 @@ function MemberDetail({ member, startWithRoles, onClose }: { member: Member; sta
   const workspace = useWorkspace();
   const can = useCan();
   const access = useAccess();
-  const isYou = member.id === access.membership.id;
+  const isYou = member.id === access.membership?.id;
   const removed = member.status === 'REMOVED';
   const manageable = !removed && access.canActOn(member);
 

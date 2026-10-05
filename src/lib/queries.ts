@@ -1,4 +1,4 @@
-import { keepPreviousData, queryOptions } from '@tanstack/react-query';
+import { infiniteQueryOptions, keepPreviousData, queryOptions } from '@tanstack/react-query';
 import {
   apiKeysApi,
   authApi,
@@ -14,6 +14,7 @@ import {
   workspaceApi,
 } from './api/endpoints';
 import type {
+  CurrentUser,
   KnowledgeBase,
   ListDocumentsParams,
   ListInvitationsParams,
@@ -21,24 +22,35 @@ import type {
   ListMembersParams,
 } from './api/types';
 import { pollInterval } from './knowledge/status';
+import { hashString } from './utils';
 
 /**
- * Query keys (Phase 1 spec §11, Phase 2 spec §9). Every workspace-scoped key
- * starts with ['ws', id] so data can never leak from one workspace into another,
- * and leaving a workspace can drop all of it at once.
+ * Query keys (Phase 1 spec §5). Every workspace-scoped key starts with
+ * ['ws', canonical UUID] so data can never leak from one workspace into another,
+ * and leaving a workspace can drop all of it at once. Everything here belongs to
+ * the signed-in user: the whole cache is cleared when the session ends or another
+ * account signs in (lib/auth/session.ts).
  */
 export const queryKeys = {
+  /** Unscoped identity: profile and the first 100 memberships. */
   me: ['me'] as const,
   mfa: ['mfa'] as const,
   sessions: ['sessions'] as const,
   workspaces: ['workspaces'] as const,
   workspacesPage: (page: number) => ['workspaces', page] as const,
+  workspacesInfinite: ['workspaces', 'infinite'] as const,
+  /** A route's workspace reference (slug or UUID) resolved to the canonical UUID. */
+  workspaceRef: (reference: string) => ['workspace-ref', reference] as const,
+  /** Contextual identity: the workspace's access checks and your permissions in it. */
+  context: (workspaceId: string) => ['ws', workspaceId, 'context'] as const,
   permissionCatalogue: ['permission-catalogue'] as const,
-  invitationPreview: (token: string) => ['invitation-preview', token] as const,
+  /** Keyed by a hash: the link token itself stays out of the cache and devtools. */
+  invitationPreview: (token: string) => ['invitation-preview', hashString(token)] as const,
   ws: (workspaceId: string) => ['ws', workspaceId] as const,
   membership: (workspaceId: string) => ['ws', workspaceId, 'membership'] as const,
   details: (workspaceId: string) => ['ws', workspaceId, 'details'] as const,
-  permissions: (workspaceId: string) => ['ws', workspaceId, 'permissions'] as const,
+  /** Your permissions come with the contextual identity: the same entry. */
+  permissions: (workspaceId: string) => ['ws', workspaceId, 'context'] as const,
   members: (workspaceId: string) => ['ws', workspaceId, 'members'] as const,
   membersList: (workspaceId: string, params: ListMembersParams) => ['ws', workspaceId, 'members', params] as const,
   member: (workspaceId: string) => ['ws', workspaceId, 'member'] as const,
@@ -85,26 +97,34 @@ export const queryKeys = {
 
 export const meQuery = queryOptions({
   queryKey: queryKeys.me,
-  queryFn: () => authApi.me(),
+  queryFn: ({ signal }) => authApi.me(undefined, signal),
   staleTime: 60_000,
 });
 
 export const mfaQuery = queryOptions({
   queryKey: queryKeys.mfa,
-  queryFn: () => authApi.mfaStatus(),
+  queryFn: ({ signal }) => authApi.mfaStatus(signal),
 });
 
 export const sessionsQuery = queryOptions({
   queryKey: queryKeys.sessions,
-  queryFn: () => authApi.sessions(),
+  queryFn: ({ signal }) => authApi.sessions(signal),
 });
 
 export const workspacesQuery = (page: number) =>
   queryOptions({
     queryKey: queryKeys.workspacesPage(page),
-    queryFn: () => organizationsApi.list(page, 20),
+    queryFn: ({ signal }) => organizationsApi.list(page, 20, signal),
     placeholderData: keepPreviousData,
   });
+
+/** Every workspace you belong to, a page at a time (the switcher). */
+export const workspacesInfiniteQuery = infiniteQueryOptions({
+  queryKey: queryKeys.workspacesInfinite,
+  queryFn: ({ pageParam, signal }) => organizationsApi.list(pageParam, 20, signal),
+  initialPageParam: 1,
+  getNextPageParam: (last) => (last.pagination.hasNextPage ? last.pagination.page + 1 : undefined),
+});
 
 export const permissionCatalogueQuery = queryOptions({
   queryKey: queryKeys.permissionCatalogue,
@@ -113,17 +133,64 @@ export const permissionCatalogueQuery = queryOptions({
   gcTime: Infinity,
 });
 
+/** What the contextual identity call tells the workspace shell. */
+export interface WorkspaceAccessContext {
+  /** Canonical UUID. */
+  id: string;
+  /** Concrete keys, sorted; [] when the server omitted them (spec §5: never full access). */
+  permissions: string[];
+  user: CurrentUser;
+}
+
+export function toAccessContext(user: CurrentUser, requested: string): WorkspaceAccessContext {
+  const permissions = Array.isArray(user.permissions)
+    ? Array.from(new Set(user.permissions.filter((key) => typeof key === 'string'))).sort()
+    : [];
+  return { id: user.activeOrganizationId ?? requested, permissions, user };
+}
+
+/**
+ * Contextual identity (P1-API-12 with X-Organization-Id): runs the workspace's
+ * access checks and returns your permissions in it. Re-checked on focus because
+ * roles and policies can change at any moment.
+ */
+export const contextQuery = (workspaceId: string) =>
+  queryOptions({
+    queryKey: queryKeys.context(workspaceId),
+    queryFn: async ({ signal }) => toAccessContext(await authApi.me(workspaceId, signal), workspaceId),
+    staleTime: 60_000,
+    refetchOnWindowFocus: true,
+  });
+
+/** A UUID in any version, as the backend's resolver accepts. */
+export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Resolves a workspace slug that isn't among the embedded memberships to its
+ * canonical UUID. The header accepts a slug, and the answer comes with the same
+ * access checks as any contextual call. A slug never changes, so it is cached.
+ */
+export const workspaceRefQuery = (reference: string) =>
+  queryOptions({
+    queryKey: queryKeys.workspaceRef(reference),
+    queryFn: async ({ signal }) => toAccessContext(await authApi.me(reference, signal), reference).id,
+    staleTime: Infinity,
+  });
+
+/** Your own membership: role labels and rank. Optional (spec §5 step 5): never retried. */
 export const membershipQuery = (workspaceId: string) =>
   queryOptions({
     queryKey: queryKeys.membership(workspaceId),
-    queryFn: () => organizationsApi.myMembership(workspaceId),
+    queryFn: ({ signal }) => organizationsApi.myMembership(workspaceId, signal),
     staleTime: 60_000,
+    retry: false,
   });
 
+/** Needs `workspace:read`. */
 export const workspaceDetailsQuery = (workspaceId: string) =>
   queryOptions({
     queryKey: queryKeys.details(workspaceId),
-    queryFn: () => organizationsApi.get(workspaceId),
+    queryFn: ({ signal }) => organizationsApi.get(workspaceId, signal),
     staleTime: 60_000,
   });
 

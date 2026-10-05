@@ -62,6 +62,7 @@ export function describeUploadError(error: unknown): UploadErrorView {
     case 'PERMISSION_DENIED':
       return { message: "You don't have permission to upload documents.", refetch: 'permissions', stopQueue: true };
     case 'REQUEST_TIMEOUT':
+    case 'NETWORK_TIMEOUT':
       return { message: 'The upload took too long. Try a faster connection or a smaller file.', retryable: true };
     case 'RATE_LIMIT_EXCEEDED':
       return { message: 'Upload limit reached.', retryAfterSeconds: error.retryAfterSeconds ?? 60 };

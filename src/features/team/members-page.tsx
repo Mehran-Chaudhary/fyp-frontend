@@ -306,7 +306,7 @@ function MembersList() {
                 </TableMessage>
               ) : (
                 items.map((member) => {
-                  const isYou = member.id === access.membership.id;
+                  const isYou = member.id === access.membership?.id;
                   const removed = member.status === 'REMOVED';
                   const manageable = !removed && access.canActOn(member);
                   const open = (event: MouseEvent) => {

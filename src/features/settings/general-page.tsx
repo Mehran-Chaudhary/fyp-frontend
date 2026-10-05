@@ -516,7 +516,7 @@ function LeaveCard({ organization }: { organization: Organization }) {
       toast.success(`You left ${workspace.name}`, { description: 'API keys you created there were revoked.' });
       setOpen(false);
       await navigate('/workspaces', { replace: true });
-      await forgetWorkspace(workspace.id, workspace.slug);
+      await forgetWorkspace(workspace.id);
     },
     onError: (err) => setError(hasCode(err, 'CANNOT_REMOVE_LAST_OWNER') ? 'You own this workspace. Transfer ownership before you can leave.' : messageFor(err)),
   });
@@ -580,7 +580,7 @@ function DangerZone({ organization }: { organization: Organization }) {
       });
       setDeleteOpen(false);
       await navigate('/workspaces', { replace: true });
-      await forgetWorkspace(workspace.id, workspace.slug);
+      await forgetWorkspace(workspace.id);
     },
     onError: (err) => setDeleteError(messageFor(err)),
   });

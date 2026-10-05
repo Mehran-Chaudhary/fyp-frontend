@@ -233,12 +233,12 @@ export function createUploadQueue(deps: UploadQueueDeps) {
     if (view.retryAfterSeconds !== undefined) {
       // 429: back in the queue, held until the server says it may try again. Its
       // Retry-After is exact, so it replaces any guess made from the headers.
-      if (error instanceof UploadError) noteRemaining(item.workspaceId, error.rateLimit.remaining);
+      if (error instanceof UploadError) noteRemaining(item.workspaceId, error.uploadRateLimit.remaining);
       patch(item.id, { status: 'queued', progress: 0, error: null, requestId });
       hold(item.workspaceId, now() + view.retryAfterSeconds * 1000, true);
       return;
     }
-    if (error instanceof UploadError) noteRateLimit(item.workspaceId, error.rateLimit.remaining, error.rateLimit.resetAt);
+    if (error instanceof UploadError) noteRateLimit(item.workspaceId, error.uploadRateLimit.remaining, error.uploadRateLimit.resetAt);
 
     patch(item.id, { status: 'failed', progress: 0, error: view, requestId });
     if (view.layerMissing) deps.onLayerMissing(item.workspaceId, view.layerMissing);

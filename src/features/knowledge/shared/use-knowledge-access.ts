@@ -35,7 +35,7 @@ export interface KnowledgeAccess {
 /**
  * The UI rules of §3.7, computed once per render of the workspace. The permission
  * snapshot may hold wildcards (`document:*`), so each key is resolved through
- * `can()`, which also means unknown permissions allow everything (the server decides).
+ * `can()`, which fails closed: a permission you do not hold is never assumed.
  */
 export function useKnowledgeAccess(): KnowledgeAccess {
   const workspace = useWorkspace();
@@ -48,14 +48,14 @@ export function useKnowledgeAccess(): KnowledgeAccess {
       permissions,
       clearance: clearanceOf(permissions),
       assignable: assignableClassifications(permissions),
-      isOwner: membership.isOwner,
-      membershipId: membership.id,
-      roleIds: membership.roles.map((role) => role.id),
+      isOwner: membership?.isOwner ?? workspace.summary?.isOwner ?? false,
+      membershipId: membership?.id ?? '',
+      roleIds: membership?.roles.map((role) => role.id) ?? [],
       has: (permission) => permissions.has(permission),
       can: (action, knowledgeBase) => !!knowledgeBase && canOnKnowledgeBase(action, knowledgeBase, permissions),
       lacks: (action) => lacksPermissionFor(action, permissions),
     };
-  }, [can, membership]);
+  }, [can, membership, workspace.summary]);
 }
 
 /** What the knowledge layer can't do on this server (§6.9), for this workspace. */

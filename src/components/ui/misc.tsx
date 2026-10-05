@@ -1,5 +1,5 @@
 import { useState, type ComponentProps, type ReactNode } from 'react';
-import { cn, hashString, initials } from '@/lib/utils';
+import { cn, hashString, initials, safeImageUrl } from '@/lib/utils';
 
 export function Skeleton({ className, ...props }: ComponentProps<'div'>) {
   return <div aria-hidden className={cn('animate-pulse rounded-md bg-well-strong/70', className)} {...props} />;
@@ -43,7 +43,10 @@ const avatarSizes = {
   xl: 'size-16 text-xl',
 };
 
-/** An avatar image when there is one (members may have `avatarUrl`), initials otherwise. */
+/**
+ * An avatar image when there is a usable one, initials otherwise: only http(s)
+ * URLs are loaded, without a referrer, and a broken image falls back to initials.
+ */
 export function Avatar({
   name,
   src,
@@ -60,7 +63,8 @@ export function Avatar({
 }) {
   // Remember which URL failed, so a new URL gets a fresh attempt.
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
-  const showImage = !!src && failedSrc !== src;
+  const url = safeImageUrl(src);
+  const showImage = !!url && failedSrc !== url;
 
   return (
     <span
@@ -74,11 +78,13 @@ export function Avatar({
     >
       {showImage ? (
         <img
-          src={src}
+          src={url}
           alt=""
           className={cn('size-full object-cover', muted && 'grayscale')}
           referrerPolicy="no-referrer"
-          onError={() => setFailedSrc(src)}
+          decoding="async"
+          loading="lazy"
+          onError={() => setFailedSrc(url)}
         />
       ) : (
         initials(name)

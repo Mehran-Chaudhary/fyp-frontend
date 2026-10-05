@@ -2,8 +2,9 @@ import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, Database, ShieldCheck, UserRound } from 'lucide-react';
 import { Link, NavLink, Outlet } from 'react-router';
 import { Logo } from '@/components/brand/logo';
+import { EMBEDDED_MEMBERSHIP_CAP, workspaceHref } from '@/lib/auth/landing';
 import { meQuery } from '@/lib/queries';
-import { STORAGE_KEYS, storage } from '@/lib/storage';
+import { lastWorkspace } from '@/lib/storage';
 import { cn } from '@/lib/utils';
 import { EmailVerificationBanner, TopBar } from '@/features/shell/top-bar';
 
@@ -13,14 +14,20 @@ const ITEMS = [
   { to: '/account/privacy', label: 'Privacy & data', icon: Database },
 ];
 
-/** Account settings frame (spec §7.12): sub-navigation and a way back. */
+/**
+ * Account settings frame: sub-navigation and a way back. Account settings need a
+ * session, never a workspace, so they stay usable when every workspace refuses
+ * entry (Phase 1 spec §6).
+ */
 export function AccountLayout() {
   const { data: me } = useQuery(meQuery);
-  const lastSlug = storage.get(STORAGE_KEYS.lastWorkspace);
-  const last = me?.memberships.find((membership) => membership.organizationSlug === lastSlug);
+  const lastId = me ? lastWorkspace.get(me.id) : null;
+  const last = lastId ? me?.memberships.find((membership) => membership.organizationId === lastId) : undefined;
   const back = last
-    ? { to: `/w/${last.organizationSlug}`, label: `Back to ${last.organizationName}` }
-    : { to: '/workspaces', label: 'Back to workspaces' };
+    ? { to: workspaceHref({ id: last.organizationId, slug: last.organizationSlug }), label: `Back to ${last.organizationName}` }
+    : lastId && (me?.memberships.length ?? 0) >= EMBEDDED_MEMBERSHIP_CAP
+      ? { to: workspaceHref({ id: lastId }), label: 'Back to your workspace' }
+      : { to: '/workspaces', label: 'Back to workspaces' };
 
   return (
     <div className="flex min-h-dvh flex-col bg-canvas">

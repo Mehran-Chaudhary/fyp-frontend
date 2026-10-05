@@ -11,8 +11,9 @@ import { Field, FormError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { PasswordInput } from '@/components/ui/password-input';
 import { authApi } from '@/lib/api/endpoints';
-import { isApiError } from '@/lib/api/errors';
+import { isApiError, isOutcomeUnknown } from '@/lib/api/errors';
 import { safeNext } from '@/lib/auth/landing';
+import { readLinkToken } from '@/lib/auth/link-tokens';
 import { completeSignIn } from '@/lib/auth/session';
 import { applyServerErrors, messageFor } from '@/lib/errors';
 import { useDocumentTitle } from '@/lib/hooks';
@@ -46,11 +47,16 @@ const schema = z
 type Values = z.infer<typeof schema>;
 const FIELDS = ['firstName', 'lastName', 'email', 'password'] as const;
 
-/** Create an account (spec §7.3). The user is signed in immediately. */
+/**
+ * Create an account (P1-API-01). The user is signed in at once, with no
+ * workspace yet: a pending invitation comes first, otherwise onboarding.
+ * `confirmPassword` stays in the browser; only the four API fields are sent.
+ */
 export function SignUpPage() {
   useDocumentTitle('Create account');
   const [params] = useSearchParams();
   const [emailTaken, setEmailTaken] = useState(false);
+  const [uncertain, setUncertain] = useState(false);
   const [rateLimitedUntil, setRateLimitedUntil] = useState<number | null>(null);
 
   const form = useForm<Values>({
@@ -66,6 +72,7 @@ export function SignUpPage() {
   const onSubmit = form.handleSubmit(async ({ firstName, lastName, email, password }) => {
     const values = { firstName, lastName, email, password };
     setEmailTaken(false);
+    setUncertain(false);
     try {
       const { data } = await authApi.register(values);
       toast.success('Account created', {
@@ -76,6 +83,11 @@ export function SignUpPage() {
       // workspace yet, so they land on "Create workspace" (spec §6.3).
       await completeSignIn(data);
     } catch (error) {
+      if (isOutcomeUnknown(error)) {
+        // The account may exist now. Signing in tells; registering again would not.
+        setUncertain(true);
+        return;
+      }
       if (!isApiError(error)) {
         form.setError('root.server', { message: messageFor(error) });
         return;
@@ -99,9 +111,11 @@ export function SignUpPage() {
 
   const next = params.get('next');
   const signInHref = `/auth/sign-in${next ? `?next=${encodeURIComponent(next)}` : ''}`;
-  // From an invitation: the masked address it was sent to (Phase 2 §2).
-  const hint = params.get('hint')?.slice(0, 320) || null;
-  const fromInvitation = !!safeNext(next)?.startsWith('/invitations/accept');
+  // From an invitation: the masked address it was sent to. A hint only: it is
+  // never used as the email (spec §6 "Invitations").
+  const invitation = readLinkToken('invitation');
+  const hint = invitation?.meta?.maskedEmail ?? null;
+  const fromInvitation = !!invitation || !!safeNext(next)?.startsWith('/invitations/accept');
 
   return (
     <>
@@ -164,6 +178,20 @@ export function SignUpPage() {
               message="Too many attempts from this network."
               onDone={() => setRateLimitedUntil(null)}
             />
+            {uncertain ? (
+              <Callout
+                tone="warning"
+                title="We couldn't confirm whether your account was created"
+                action={
+                  <Button asChild size="sm" variant="secondary">
+                    <Link to={signInHref}>Sign in instead</Link>
+                  </Button>
+                }
+              >
+                The connection dropped before AgentVault answered. Try signing in with this email first; if that
+                doesn't work, create the account again.
+              </Callout>
+            ) : null}
             <FormError message={errors.root?.server?.message} />
 
             <Button type="submit" size="lg" className="mt-1 w-full" loading={isSubmitting} disabled={!!rateLimitedUntil}>

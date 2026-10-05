@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { Ban, Compass, Globe, LayoutGrid, RefreshCw, ShieldAlert, UserX } from 'lucide-react';
+import { Ban, Compass, Globe, LayoutGrid, MailWarning, RefreshCw, ShieldAlert, UserRound, UserX } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import { Logo } from '@/components/brand/logo';
@@ -7,41 +7,55 @@ import { RequestReference } from '@/components/feedback/states';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/misc';
 import type { ApiError } from '@/lib/api/errors';
-import type { MembershipSummary } from '@/lib/api/types';
 import { signOut } from '@/lib/auth/session';
 import { APP_NAME } from '@/lib/env';
 import { useDocumentTitle } from '@/lib/hooks';
-import { mfaQuery } from '@/lib/queries';
+import { meQuery, mfaQuery } from '@/lib/queries';
+import { ResendVerification } from '@/features/auth/resend-verification';
 import { TopBar } from '@/features/shell/top-bar';
 
-type Props =
-  | { kind: 'not-found'; slug: string; error?: undefined; summary?: undefined; onRetry?: undefined; retrying?: undefined }
-  | { kind?: undefined; error: ApiError; summary: MembershipSummary; onRetry: () => void; retrying?: boolean; slug?: undefined };
-
 /**
- * The states the workspace gate renders instead of the shell (spec §7.11), in a
- * minimal frame with the user menu so the user can always get elsewhere.
+ * What the workspace gate renders when a workspace refuses entry (Phase 1 spec
+ * §11). Every state keeps the way out: the workspace picker, account settings,
+ * and sign-out in the user menu. The global account is never signed out for a
+ * workspace's policy.
  */
-export function WorkspaceAccessState(props: Props) {
-  const code = props.kind === 'not-found' ? 'ORGANIZATION_NOT_FOUND' : props.error.code;
-  const reason = typeof props.error?.details?.reason === 'string' ? props.error.details.reason : null;
-  const workspaceName = props.summary?.organizationName ?? 'This workspace';
+export function WorkspaceAccessState({
+  error,
+  workspaceName,
+  reference,
+  onRetry,
+  retrying,
+}: {
+  error: ApiError;
+  /** Known when the workspace is among the embedded memberships. */
+  workspaceName: string | null;
+  /** The slug or id from the address, for the not-found message. */
+  reference: string;
+  onRetry?: () => void;
+  retrying?: boolean;
+}) {
+  const code = error.code;
+  const reason = typeof error.details?.reason === 'string' ? error.details.reason : null;
+  const name = workspaceName ?? 'This workspace';
+  const nameInSentence = workspaceName ?? 'this workspace';
   useDocumentTitle('Workspace unavailable');
 
-  const retryButton =
-    props.onRetry && code !== 'ORGANIZATION_NOT_FOUND' ? (
-      <Button variant="ghost" onClick={props.onRetry} loading={props.retrying}>
-        {props.retrying ? null : <RefreshCw />}
-        Try again
-      </Button>
-    ) : null;
+  const retryButton = onRetry ? (
+    <Button variant="ghost" onClick={onRetry} loading={retrying}>
+      {retrying ? null : <RefreshCw />}
+      Check again
+    </Button>
+  ) : null;
 
   let content: ReactNode;
+  let actions: ReactNode = null;
   switch (code) {
     case 'ORGANIZATION_SUSPENDED':
       content = (
         <StateBody icon={<Ban />} tone="danger" title="This workspace is suspended">
-          {workspaceName} has been suspended by the platform, so its agents, documents and workflows are unavailable.
+          {name} has been suspended, so its agents, documents and workflows are unavailable. Your account and your
+          other workspaces are not affected.
           {reason ? <Reason>{reason}</Reason> : null}
         </StateBody>
       );
@@ -49,40 +63,43 @@ export function WorkspaceAccessState(props: Props) {
     case 'MEMBERSHIP_SUSPENDED':
       content = (
         <StateBody icon={<UserX />} tone="danger" title="Your access to this workspace is suspended">
-          An administrator of {workspaceName} suspended your membership. Your other workspaces are not affected.
+          An administrator of {nameInSentence} suspended your membership. Your other workspaces are not affected.
           {reason ? <Reason>{reason}</Reason> : null}
         </StateBody>
       );
       break;
     case 'IP_NOT_ALLOWED':
       content = (
-        <StateBody icon={<Globe />} tone="warning" title="Your network isn't allowed">
-          This workspace only accepts connections from approved networks. Connect through your organisation's network
-          or VPN, or contact your administrator.
+        <StateBody icon={<Globe />} tone="warning" title="Your network isn't allowed here">
+          {name} only accepts connections from approved networks. Connect through your organisation's network or VPN,
+          or ask an administrator to allow this one.
         </StateBody>
       );
       break;
+    case 'ACCOUNT_EMAIL_NOT_VERIFIED':
+      content = (
+        <StateBody icon={<MailWarning />} tone="warning" title="This workspace requires a verified email">
+          Open the verification link we emailed you, then check again. Your other workspaces are not affected.
+        </StateBody>
+      );
+      actions = <VerifyEmailAction />;
+      break;
     case 'MFA_REQUIRED':
       content = (
-        <MfaRequired
-          workspaceName={workspaceName}
-          slug={props.summary?.organizationSlug ?? ''}
-          requiredBy={props.error?.details?.requiredBy}
+        <MfaRequiredBody
+          workspaceName={name}
+          reference={reference}
+          requiredBy={error.details?.requiredBy}
           retry={retryButton}
         />
       );
       break;
     default:
       content = (
-        <StateBody icon={<Compass />} tone="neutral" title="Workspace not found">
-          {props.kind === 'not-found' ? (
-            <>
-              There's no workspace at <span className="rounded bg-well px-1.5 py-0.5 font-mono text-[12px] text-ink-soft">/w/{props.slug}</span>,
-              or you don't have access to it.
-            </>
-          ) : (
-            "It doesn't exist or you don't have access."
-          )}
+        <StateBody icon={<Compass />} tone="neutral" title="Workspace unavailable">
+          There's no workspace at{' '}
+          <span className="rounded bg-well px-1.5 py-0.5 font-mono text-[12px] break-all text-ink-soft">/w/{reference}</span>{' '}
+          that you can open. It may have been deleted, or you may no longer be a member.
         </StateBody>
       );
   }
@@ -94,24 +111,31 @@ export function WorkspaceAccessState(props: Props) {
           <Logo />
         </Link>
       </TopBar>
-      <main className="flex flex-1 items-center justify-center px-5 py-12">
+      <main className="flex flex-1 items-center justify-center px-4 py-12 sm:px-5">
         <div className="w-full max-w-md animate-rise">
-          <div className="rounded-xl border border-line bg-surface p-7 shadow-card">
+          <div className="rounded-xl border border-line bg-surface p-6 shadow-card sm:p-7">
             {content}
             {code === 'MFA_REQUIRED' ? null : (
-              <div className="mt-6 flex flex-wrap gap-2">
-                <Button asChild>
-                  <Link to="/workspaces">
-                    <LayoutGrid />
-                    Your workspaces
-                  </Link>
-                </Button>
-                {retryButton}
-              </div>
+              <>
+                {actions ? <div className="mt-5">{actions}</div> : null}
+                <div className="mt-6 flex flex-wrap gap-2">
+                  <Button asChild>
+                    <Link to="/workspaces">
+                      <LayoutGrid />
+                      Your workspaces
+                    </Link>
+                  </Button>
+                  {code === 'ORGANIZATION_NOT_FOUND' ? null : retryButton}
+                </div>
+              </>
             )}
           </div>
-          <div className="mt-3 flex justify-center">
-            <RequestReference requestId={props.error?.requestId} />
+          <div className="mt-3 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[13px]">
+            <Link to="/account/profile" className="inline-flex items-center gap-1.5 rounded text-muted hover:text-ink">
+              <UserRound className="size-3.5" aria-hidden />
+              Account settings
+            </Link>
+            <RequestReference requestId={error.requestId} />
           </div>
         </div>
       </main>
@@ -119,28 +143,34 @@ export function WorkspaceAccessState(props: Props) {
   );
 }
 
-function MfaRequired({
+function VerifyEmailAction() {
+  const { data: me } = useQuery(meQuery);
+  return <ResendVerification email={me?.email} variant="secondary" size="md" />;
+}
+
+function MfaRequiredBody({
   workspaceName,
-  slug,
+  reference,
   requiredBy,
   retry,
 }: {
   workspaceName: string;
-  slug: string;
+  reference: string;
   requiredBy: unknown;
   retry: ReactNode;
 }) {
   const mfa = useQuery(mfaQuery);
-  const next = `/w/${slug}`;
+  const next = `/w/${reference}`;
   const byPlatform = requiredBy === 'platform';
-
+  // MFA is on for the account, but this session signed in without a code: there is
+  // no step-up endpoint, so the only way to a verified session is a fresh sign-in.
   const needsFreshSignIn = !!mfa.data?.enabled && !mfa.data.sessionVerified;
 
   return (
     <>
       <StateBody icon={<ShieldAlert />} tone="warning" title="Two-step verification required">
         {byPlatform
-          ? `${APP_NAME} requires two-step verification for every account.`
+          ? `${APP_NAME} requires two-step verification for platform administrators.`
           : `${workspaceName} requires two-step verification.`}{' '}
         {mfa.isPending
           ? null
@@ -155,7 +185,7 @@ function MfaRequired({
           <Button onClick={() => void signOut('quiet')}>Sign in again</Button>
         ) : (
           <Button asChild>
-            <Link to={`/account/security?next=${encodeURIComponent(next)}`}>Set up two-step verification</Link>
+            <Link to={`/account/security?next=${encodeURIComponent(next)}#two-step`}>Set up two-step verification</Link>
           </Button>
         )}
         <Button asChild variant="secondary">

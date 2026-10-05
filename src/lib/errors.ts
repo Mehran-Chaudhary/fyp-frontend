@@ -17,6 +17,12 @@ export function messageFor(error: unknown): string {
       return "Can't reach AgentVault. Check your connection and try again.";
     case 'REQUEST_TIMEOUT':
       return 'The request took too long. Try again.';
+    case 'NETWORK_TIMEOUT':
+      return "AgentVault didn't answer in time. If you were changing something, check whether it happened before trying again.";
+    case 'UNEXPECTED_RESPONSE':
+      return error.message;
+    case 'SESSION_CHANGED':
+      return 'Your session changed, so this was not sent. Try again.';
     case 'INTERNAL_SERVER_ERROR':
       return 'Something went wrong on our side. Try again in a moment.';
     case 'SERVICE_UNAVAILABLE':

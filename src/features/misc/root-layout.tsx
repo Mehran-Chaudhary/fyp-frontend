@@ -1,5 +1,10 @@
 import { Outlet, ScrollRestoration } from 'react-router';
-import { NavigationProgress, OfflineBanner, RefreshThrottleScreen } from '@/components/feedback/global-states';
+import {
+  NavigationProgress,
+  OfflineBanner,
+  RefreshThrottleScreen,
+  RefreshUncertainDialog,
+} from '@/components/feedback/global-states';
 
 /** Global chrome shared by every route. */
 export function RootLayout() {
@@ -8,6 +13,7 @@ export function RootLayout() {
       <NavigationProgress />
       <OfflineBanner />
       <RefreshThrottleScreen />
+      <RefreshUncertainDialog />
       <Outlet />
       <ScrollRestoration />
     </>

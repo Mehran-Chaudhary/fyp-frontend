@@ -37,13 +37,15 @@ function urlOf(input: RequestInfo | URL): string {
 }
 
 describe('token manager', () => {
-  it('shares one refresh between concurrent callers (single-flight, spec §4.2)', async () => {
-    let release!: (res: Response) => void;
+  it('shares one refresh between concurrent callers (single-flight, P1-T23)', async () => {
+    let release: ((res: Response) => void) | undefined;
     const fetchMock = vi.fn(() => new Promise<Response>((resolve) => (release = resolve)));
     vi.stubGlobal('fetch', fetchMock);
 
     const pending = [tm.refreshAccessToken(), tm.refreshAccessToken(), tm.refreshAccessToken()];
-    release(ok(tokens('fresh')));
+    // The refresh starts once this tab holds the cross-tab lock.
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    release!(ok(tokens('fresh')));
 
     expect(await Promise.all(pending)).toEqual(['fresh', 'fresh', 'fresh']);
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -101,14 +103,63 @@ describe('token manager', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('holds the next refresh after a password change (BF-3)', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ok(tokens('after-change'))));
-    tm.startSession({ accessToken: 'dead', expiresIn: 900 });
-    tm.expireTokenAndDelayRefresh(60, false);
+  it('renews right after a password change, with no artificial delay', async () => {
+    const fetchMock = vi.fn(async () => ok(tokens('after-change')));
+    vi.stubGlobal('fetch', fetchMock);
+    tm.startSession({ accessToken: 'cut-off', expiresIn: 900 });
+    tm.credentialsChanged();
 
-    const started = performance.now();
+    expect(tm.peekAccessToken()).toBeNull();
     expect(await tm.getAccessToken()).toBe('after-change');
-    expect(performance.now() - started).toBeGreaterThanOrEqual(50);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('discards a refresh answer that arrives after sign-out (no resurrection, P1-T25)', async () => {
+    let release!: (res: Response) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => (release = resolve))));
+    tm.startSession({ accessToken: 'about-to-expire', expiresIn: 5 });
+
+    const pending = tm.getAccessToken();
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    tm.endSession('signed-out', false);
+    release(ok(tokens('late')));
+
+    expect(await pending).toBeNull();
+    expect(tm.hasActiveSession()).toBe(false);
+    expect(tm.peekAccessToken()).toBeNull();
+  });
+
+  it('never repeats a refresh that timed out: the user decides (no grace window on reuse)', async () => {
+    const fetchMock = vi.fn(async () => Promise.reject(new DOMException('timed out', 'TimeoutError')));
+    vi.stubGlobal('fetch', fetchMock);
+    tm.startSession({ accessToken: 'about-to-expire', expiresIn: 5 });
+    const uncertain = vi.fn();
+    const off = tm.authEvents.on('refresh-uncertain', uncertain);
+
+    await expect(tm.getAccessToken()).rejects.toMatchObject({ code: 'NETWORK_TIMEOUT', source: 'client' });
+    await expect(tm.getAccessToken()).rejects.toMatchObject({ code: 'NETWORK_TIMEOUT' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(uncertain).toHaveBeenCalledTimes(1);
+    expect(tm.hasActiveSession()).toBe(true);
+
+    vi.stubGlobal('fetch', vi.fn(async () => ok(tokens('confirmed'))));
+    expect(await tm.retryUncertainRefresh()).toBe('confirmed');
+    off();
+  });
+
+  it('finishes an unconfirmed sign-out without signing anyone back in', async () => {
+    const seen: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const auth = (init?.headers as Record<string, string>).Authorization;
+        seen.push(`${urlOf(input).replace(API_BASE_URL, '')}${auth ? ` ${auth}` : ''}`);
+        return urlOf(input).endsWith('/auth/refresh') ? ok(tokens('throwaway')) : ok({ revokedSessions: 1 });
+      }),
+    );
+    expect(await tm.revokeCookieSession()).toBe(true);
+    expect(seen).toEqual(['/auth/refresh', '/auth/logout Bearer throwaway']);
+    expect(tm.hasActiveSession()).toBe(false);
   });
 });
 
@@ -183,5 +234,105 @@ describe('API client', () => {
     const page = await client.callPaginated<{ id: number }>('/organizations');
     expect(page.items).toEqual([{ id: 1 }, { id: 2 }]);
     expect(page.pagination.totalItems).toBe(2);
+  });
+});
+
+describe('API client: renewal rules (spec §4) and responses (spec §3)', () => {
+  it('ends the session on AUTH_TOKEN_INVALID without trying a refresh', async () => {
+    const fetchMock = vi.fn(async () => fail(401, 'AUTH_TOKEN_INVALID'));
+    vi.stubGlobal('fetch', fetchMock);
+    tm.startSession({ accessToken: 'forged', expiresIn: 900 });
+
+    await expect(client.call('/auth/me')).rejects.toMatchObject({ code: 'AUTH_TOKEN_INVALID' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(tm.hasActiveSession()).toBe(false);
+  });
+
+  it('lets one refresh decide an AUTH_TOKEN_REVOKED (a password change keeps the family)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (urlOf(input).endsWith('/auth/refresh')) return ok(tokens('renewed'));
+        const auth = (init?.headers as Record<string, string>).Authorization;
+        return auth === 'Bearer renewed' ? ok({ fine: true }) : fail(401, 'AUTH_TOKEN_REVOKED');
+      }),
+    );
+    tm.startSession({ accessToken: 'cut-off', expiresIn: 900 });
+    expect(await client.call('/auth/sessions')).toEqual({ fine: true });
+    expect(tm.hasActiveSession()).toBe(true);
+  });
+
+  it('ends the session when the refresh after AUTH_TOKEN_REVOKED is refused too', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => fail(401, 'AUTH_TOKEN_REVOKED')));
+    tm.startSession({ accessToken: 'revoked', expiresIn: 900 });
+    await expect(client.call('/auth/sessions')).rejects.toMatchObject({ code: 'AUTH_TOKEN_REVOKED' });
+    expect(tm.hasActiveSession()).toBe(false);
+  });
+
+  it('does not replay a request into a different session', async () => {
+    let release: ((res: Response) => void) | undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) =>
+        urlOf(input).endsWith('/auth/refresh')
+          ? new Promise<Response>((resolve) => (release = resolve))
+          : Promise.resolve(fail(401, 'AUTH_TOKEN_EXPIRED')),
+      ),
+    );
+    tm.startSession({ accessToken: 'old', expiresIn: 900 });
+    const pending = client.call('/organizations');
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    tm.endSession('signed-out', false);
+    tm.startSession({ accessToken: 'someone-else', expiresIn: 900 });
+    release!(ok(tokens('late')));
+
+    await expect(pending).rejects.toMatchObject({ code: 'SESSION_CHANGED', source: 'client' });
+    expect(tm.peekAccessToken()).toBe('someone-else');
+  });
+
+  it('rejects a success that is not the API envelope (an HTML page from a proxy)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('<!doctype html><title>app</title>', { status: 200, headers: { 'content-type': 'text/html' } })),
+    );
+    tm.startSession({ accessToken: 't', expiresIn: 900 });
+    await expect(client.call('/auth/me')).rejects.toMatchObject({
+      code: 'UNEXPECTED_RESPONSE',
+      source: 'client',
+      requestId: undefined,
+    });
+  });
+
+  it('reports a network failure without inventing a request id', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new TypeError('Failed to fetch'))));
+    tm.startSession({ accessToken: 't', expiresIn: 900 });
+    await expect(client.call('/auth/me')).rejects.toMatchObject({ code: 'NETWORK_ERROR', status: 0, requestId: undefined });
+  });
+
+  it('never attaches a bearer or workspace to public calls, and always sends cookies', async () => {
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => ok({ sent: true }));
+    vi.stubGlobal('fetch', fetchMock);
+    tm.startSession({ accessToken: 'secret', expiresIn: 900 });
+    await client.call('/auth/forgot-password', { method: 'POST', body: { email: 'a@b.c' }, auth: false });
+    const [, init] = fetchMock.mock.calls[0];
+    expect((init?.headers as Record<string, string>).Authorization).toBeUndefined();
+    expect((init?.headers as Record<string, string>)['X-Organization-Id']).toBeUndefined();
+    expect(init?.credentials).toBe('include');
+  });
+
+  it('gives every attempt a fresh X-Request-Id, replays included', async () => {
+    const ids: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (urlOf(input).endsWith('/auth/refresh')) return ok(tokens('fresh'));
+        ids.push((init?.headers as Record<string, string>)['X-Request-Id']);
+        return ids.length === 1 ? fail(401, 'AUTH_TOKEN_EXPIRED') : ok({});
+      }),
+    );
+    tm.startSession({ accessToken: 'stale', expiresIn: 900 });
+    await client.call('/auth/sessions');
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
   });
 });

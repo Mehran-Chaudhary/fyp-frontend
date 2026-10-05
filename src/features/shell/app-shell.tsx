@@ -356,7 +356,7 @@ function SecurityPosture({ collapsed, onNavigate }: { collapsed: boolean; onNavi
       <span className="min-w-0 text-xs leading-snug">
         <span className="block font-medium text-ink">{enabled ? 'Two-step verification on' : 'Two-step verification off'}</span>
         <span className="block truncate text-muted">
-          {enabled ? `Your role: ${primaryRoleLabel(workspace.membership)}` : 'Protect your account'}
+          {enabled ? `Your role: ${primaryRoleLabel(workspace.membership, workspace.summary)}` : 'Protect your account'}
         </span>
       </span>
     </Link>

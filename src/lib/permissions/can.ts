@@ -1,5 +1,4 @@
 import { permissionMatches } from './expand';
-import type { PermissionSnapshot } from './load';
 
 export interface Can {
   (permission: string): boolean;
@@ -7,28 +6,25 @@ export interface Can {
   any: (...permissions: string[]) => boolean;
   /** True if all of the permissions are held. */
   all: (...permissions: string[]) => boolean;
-  /** False when the permissions could not be determined (everything is allowed then). */
-  known: boolean;
 }
 
 /**
- * Builds the `can()` helper for a permission snapshot (spec §5.3). Unknown
- * permissions allow everything; the server remains the authority.
+ * Builds the `can()` helper from your concrete permission keys in a workspace
+ * (Phase 1 spec §5 "Permission-driven UI"). It fails closed: a key that isn't in
+ * the list is not held, and an empty or missing list holds nothing. The server
+ * expands wildcards before sending them; wildcards are still understood here so a
+ * future response can't widen nothing into everything by accident.
  */
-export function createCan(snapshot: PermissionSnapshot | null | undefined): Can {
-  const keys = snapshot?.keys ?? null;
-  const exact = new Set(keys ?? []);
-  const wildcards = (keys ?? []).filter((key) => key.includes('*'));
+export function createCan(keys: readonly string[] | null | undefined): Can {
+  const list = Array.isArray(keys) ? keys : [];
+  const exact = new Set(list);
+  const wildcards = list.filter((key) => key.includes('*'));
 
-  const check = (permission: string): boolean => {
-    if (keys === null) return true;
-    if (exact.has(permission)) return true;
-    return wildcards.some((granted) => permissionMatches(granted, permission));
-  };
+  const check = (permission: string): boolean =>
+    exact.has(permission) || wildcards.some((granted) => permissionMatches(granted, permission));
 
   return Object.assign(check, {
     any: (...permissions: string[]) => permissions.some(check),
     all: (...permissions: string[]) => permissions.every(check),
-    known: keys !== null,
   });
 }

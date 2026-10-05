@@ -74,25 +74,26 @@ describe('expandPermissions', () => {
   });
 });
 
-describe('createCan', () => {
+describe('createCan (fails closed, spec §5)', () => {
   it('checks concrete permissions', () => {
-    const can = createCan({ keys: ['agent:read', 'member:read'], source: 'computed' });
+    const can = createCan(['agent:read', 'member:read']);
     expect(can('agent:read')).toBe(true);
     expect(can('audit:read')).toBe(false);
     expect(can.any('audit:read', 'member:read')).toBe(true);
     expect(can.all('audit:read', 'member:read')).toBe(false);
-    expect(can.known).toBe(true);
   });
 
   it('understands wildcards the server might return', () => {
-    const can = createCan({ keys: ['agent:*'], source: 'server' });
+    const can = createCan(['agent:*']);
     expect(can('agent:delete')).toBe(true);
     expect(can('audit:read')).toBe(false);
   });
 
-  it('allows everything when permissions are unknown', () => {
-    const can = createCan({ keys: null, source: 'unknown' });
-    expect(can('audit:read')).toBe(true);
-    expect(can.known).toBe(false);
+  it('holds nothing when permissions are absent or empty', () => {
+    for (const keys of [undefined, null, []]) {
+      const can = createCan(keys);
+      expect(can('workspace:read')).toBe(false);
+      expect(can.any('workspace:read', 'member:read')).toBe(false);
+    }
   });
 });

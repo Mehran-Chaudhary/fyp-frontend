@@ -2,9 +2,18 @@ import { markReachable, markUnreachable } from '@/lib/connectivity';
 import { API_BASE_URL } from '@/lib/env';
 import { createEmitter } from '@/lib/events';
 import { filenameFromDisposition } from './content-disposition';
-import { ApiError, networkError, REFRESHABLE_401, toApiError } from './errors';
-import { endSession, getAccessToken, peekAccessToken, refreshAccessToken } from './token-manager';
-import type { ApiResult, ApiSuccess, Paginated, ResponseMeta } from './types';
+import {
+  ApiError,
+  networkError,
+  readJson,
+  readRateLimit,
+  REFRESHABLE_401,
+  SESSION_ENDING_401,
+  timeoutError,
+  toApiError,
+} from './errors';
+import { currentSessionEpoch, endSession, getAccessToken, peekAccessToken, refreshAccessToken } from './token-manager';
+import type { ApiResult, Paginated, ResponseMeta } from './types';
 
 export type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
 
@@ -13,25 +22,32 @@ export interface RequestOptions {
   body?: unknown;
   query?: Record<string, string | number | boolean | null | undefined>;
   /**
-   * Sets X-Organization-Id (spec §3.4). The server resolves the workspace from this
-   * header, not the path, so use `workspacePath()` to build both from one value.
+   * Sets X-Organization-Id. The header wins over the path on the server, so build
+   * workspace calls with `workspacePath()`, which derives both from one value
+   * (Phase 1 spec §5 "One context source"). Never set it globally.
    */
   workspaceId?: string;
-  /** Send the Bearer token. Default true. */
+  /** Send the Bearer token. Default true. Public calls never carry a stale token. */
   auth?: boolean;
-  /** Refresh and retry once on an expired/revoked token. Default true. */
+  /**
+   * Use this exact access token and never refresh (sign-out, which already holds
+   * the auth lock and must not wait for it again).
+   */
+  bearer?: string;
+  /** Refresh and replay once after an expired-token 401. Default true. */
   authRetry?: boolean;
   /** Let the global handler react (permission toasts, workspace gate). Default true. */
   globalErrors?: boolean;
   /**
    * Error codes the caller handles itself; the global handler ignores them. Some
    * codes mean "you lost access" on most calls but are an ordinary refusal on a
-   * few: MFA_REQUIRED from "require two-step verification" (E30) refuses that
-   * change, and MEMBERSHIP_SUSPENDED from an invitation (E46) is about the invitee.
+   * few: MFA_REQUIRED from "require two-step verification" refuses that change,
+   * and MEMBERSHIP_SUSPENDED from an invitation is about the invitee.
    */
   localCodes?: readonly string[];
+  /** Cancels the request (navigation, workspace switch). Never shown as an error. */
   signal?: AbortSignal;
-  /** The server gives up at 30 s; wait slightly longer so its answer arrives (§3.7). */
+  /** The server gives up at 30 s; wait slightly longer so its answer arrives. */
   timeoutMs?: number;
 }
 
@@ -42,6 +58,7 @@ export const apiEvents = createEmitter<{
 
 const DEFAULT_TIMEOUT_MS = 35_000;
 
+/** A fresh correlation id for every HTTP attempt, replays included (spec §3). */
 function newRequestId(): string {
   try {
     return crypto.randomUUID();
@@ -79,16 +96,38 @@ function asApiError(error: unknown): ApiError {
   return error instanceof ApiError ? error : networkError();
 }
 
+function unexpectedResponse(res: Response): ApiError {
+  return new ApiError({
+    status: res.status,
+    code: 'UNEXPECTED_RESPONSE',
+    message: "AgentVault's API sent an answer this app can't read. Check the API address it is configured with.",
+    source: 'client',
+  });
+}
+
 type Parser<T> = (res: Response) => Promise<ApiResult<T>>;
 
+/** Success must be the API's JSON envelope; anything else (an HTML page) is an error. */
 const parseJson = async <T>(res: Response): Promise<ApiResult<T>> => {
-  if (res.status === 204) return { data: null as T, meta: metaFromHeaders(res) };
-  const json = (await res.json().catch(() => null)) as ApiSuccess<T> | null;
-  if (json && typeof json === 'object' && 'data' in json) {
-    return { data: json.data, meta: json.meta ?? metaFromHeaders(res) };
+  const rateLimit = readRateLimit(res.headers);
+  if (res.status === 204) return { data: null as T, meta: metaFromHeaders(res), rateLimit };
+  const json = (await readJson(res)) as { success?: unknown; data?: T; meta?: ResponseMeta } | null;
+  if (!json || typeof json !== 'object' || json.success !== true || !('data' in json)) {
+    throw unexpectedResponse(res);
   }
-  return { data: json as T, meta: metaFromHeaders(res) };
+  return { data: json.data as T, meta: json.meta ?? metaFromHeaders(res), rateLimit };
 };
+
+class SessionChangedError extends ApiError {
+  constructor() {
+    super({
+      status: 0,
+      code: 'SESSION_CHANGED',
+      message: 'Your session changed while this request was waiting, so it was not sent again.',
+      source: 'client',
+    });
+  }
+}
 
 async function send<T>(path: string, options: RequestOptions, parse: Parser<T>, retried = false): Promise<ApiResult<T>> {
   const {
@@ -96,10 +135,13 @@ async function send<T>(path: string, options: RequestOptions, parse: Parser<T>, 
     body,
     workspaceId,
     auth = true,
+    bearer,
     authRetry = true,
     signal,
     timeoutMs = DEFAULT_TIMEOUT_MS,
   } = options;
+  // A replay belongs to the session it started in (spec §4 "Renewal and replay").
+  const epoch = currentSessionEpoch();
 
   const headers: Record<string, string> = {
     Accept: 'application/json',
@@ -109,18 +151,21 @@ async function send<T>(path: string, options: RequestOptions, parse: Parser<T>, 
   if (workspaceId) headers['X-Organization-Id'] = workspaceId;
 
   let usedToken: string | null = null;
-  if (auth) {
+  if (bearer) {
+    usedToken = bearer;
+  } else if (auth) {
     try {
       usedToken = await getAccessToken();
     } catch (error) {
-      // The refresh itself failed transiently (429 / 5xx / network).
+      // The refresh itself failed transiently (429 / 5xx / network / timeout).
       throw report(asApiError(error), options, path);
     }
     if (!usedToken) {
-      throw new ApiError({ status: 401, code: 'AUTH_TOKEN_MISSING', message: 'Please sign in to continue.' });
+      throw new ApiError({ status: 401, code: 'AUTH_TOKEN_MISSING', message: 'Please sign in to continue.', source: 'client' });
     }
-    headers.Authorization = `Bearer ${usedToken}`;
   }
+  if (usedToken) headers.Authorization = `Bearer ${usedToken}`;
+  signal?.throwIfAborted();
 
   const timeout = AbortSignal.timeout(timeoutMs);
   let res: Response;
@@ -133,30 +178,37 @@ async function send<T>(path: string, options: RequestOptions, parse: Parser<T>, 
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
   } catch (cause) {
-    if (signal?.aborted) throw cause; // the caller cancelled (e.g. a query unmounted)
-    if (timeout.aborted) {
-      throw report(
-        new ApiError({ status: 408, code: 'REQUEST_TIMEOUT', message: 'The request took too long. Try again.' }),
-        options,
-        path,
-      );
-    }
+    if (signal?.aborted) throw cause; // the caller cancelled: not an error to show
+    if (timeout.aborted) throw report(timeoutError(), options, path);
     markUnreachable();
     throw report(networkError(), options, path);
   }
 
   if (res.ok) {
     markReachable();
-    return parse(res);
+    try {
+      return await parse(res);
+    } catch (error) {
+      throw report(asApiError(error), options, path);
+    }
   }
 
   const { error, isEnvelope } = await toApiError(res);
   if (!isEnvelope && res.status >= 500) markUnreachable();
   else markReachable();
 
-  if (auth && authRetry && res.status === 401 && REFRESHABLE_401.has(error.code)) {
-    if (!retried) {
-      // Another request may already have refreshed while this one was in flight.
+  if (auth && !bearer && res.status === 401 && isEnvelope) {
+    if (SESSION_ENDING_401.has(error.code)) {
+      endSession(error.code);
+      throw error;
+    }
+    if (authRetry && REFRESHABLE_401.has(error.code)) {
+      if (retried) {
+        // A brand-new token was refused too: the session is gone.
+        endSession(error.code);
+        throw error;
+      }
+      // Another request may already have renewed while this one was in flight.
       const current = peekAccessToken();
       let next: string | null;
       if (current && current !== usedToken) {
@@ -168,13 +220,11 @@ async function send<T>(path: string, options: RequestOptions, parse: Parser<T>, 
           throw report(asApiError(refreshError), options, path);
         }
       }
-      if (next) return send(path, options, parse, true);
       // The refresh ended the session and announced why; nothing more to do here.
-      throw error;
+      if (!next) throw error;
+      if (currentSessionEpoch() !== epoch || signal?.aborted) throw new SessionChangedError();
+      return send(path, options, parse, true);
     }
-    // A brand-new token was refused too: the session is gone.
-    endSession(error.code);
-    throw error;
   }
 
   throw report(error, options, path);
@@ -208,8 +258,8 @@ export async function callPaginated<T>(path: string, options: RequestOptions = {
 }
 
 /**
- * A raw file download (E21, E72 are not enveloped). Errors are still enveloped
- * JSON, and are thrown as ApiError like any other call.
+ * A raw file download (not enveloped). Errors are still enveloped JSON, and are
+ * thrown as ApiError like any other call.
  */
 export async function download(
   path: string,
@@ -225,7 +275,7 @@ export async function download(
 
 /**
  * Builds a workspace-scoped path and its matching header from the same id, so the
- * two can never disagree (spec §3.4).
+ * two can never disagree (Phase 1 spec §5). Pass the canonical UUID.
  */
 export function workspacePath(workspaceId: string, subpath = ''): [string, { workspaceId: string }] {
   return [`/organizations/${encodeURIComponent(workspaceId)}${subpath}`, { workspaceId }];

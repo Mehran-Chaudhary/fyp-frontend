@@ -13,19 +13,26 @@ import { OtpInput } from '@/components/ui/otp-input';
 import { PasswordInput } from '@/components/ui/password-input';
 import { authApi } from '@/lib/api/endpoints';
 import { isApiError, type ApiError } from '@/lib/api/errors';
-import { installToken } from '@/lib/api/token-manager';
+import { hasActiveSession, installToken, refreshAccessToken } from '@/lib/api/token-manager';
 import type { MfaSetup } from '@/lib/api/types';
 import { messageFor } from '@/lib/errors';
 import { meQuery, queryKeys } from '@/lib/queries';
 import { queryClient } from '@/lib/query-client';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
+import { revalidateWorkspaceAccess } from '@/lib/workspace/cache';
 import { normaliseTotp, TOTP_PATTERN } from '@/lib/validation/schemas';
 import { RecoveryCodesPanel } from './recovery-codes';
 
+/**
+ * After any MFA change: status, identity (`mfaEnabled`) and devices change, and
+ * every workspace's MFA policy must be re-evaluated against the new state.
+ */
 function refreshMfaState() {
   void queryClient.invalidateQueries({ queryKey: queryKeys.mfa });
+  void queryClient.invalidateQueries({ queryKey: queryKeys.me });
   void queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
+  void revalidateWorkspaceAccess();
 }
 
 /** Shared handling for the throttle every MFA endpoint shares (spec §3.6). */
@@ -46,7 +53,11 @@ function useRateLimit() {
 
 // ── Enable (3-step wizard) ──────────────────────────────────────────────────
 
-type SetupStep = { kind: 'password' } | { kind: 'scan'; setup: MfaSetup } | { kind: 'codes'; codes: string[] };
+type SetupStep =
+  | { kind: 'password' }
+  | { kind: 'scan'; setup: MfaSetup }
+  /** `upgraded`: this session now carries the second factor (a replacement token arrived). */
+  | { kind: 'codes'; codes: string[]; upgraded: boolean };
 
 /** Turn on two-step verification (spec §7.13 card 2, E17 → E18). */
 export function EnableMfaDialog({
@@ -100,8 +111,8 @@ export function EnableMfaDialog({
               refreshMfaState();
               close(false);
             }}
-            onEnabled={(codes) => {
-              setStep({ kind: 'codes', codes });
+            onEnabled={(codes, upgraded) => {
+              setStep({ kind: 'codes', codes, upgraded });
               refreshMfaState();
               onEnabled?.();
             }}
@@ -113,7 +124,13 @@ export function EnableMfaDialog({
               title="Two-step verification is on"
               description="Your other devices were signed out; they'll need a code next time. Keep these recovery codes for when your phone isn't at hand."
             />
-            <DialogBody>
+            <DialogBody className="grid gap-4">
+              {step.upgraded ? null : (
+                <Callout tone="info" title="Sign in again before entering protected workspaces">
+                  This session was started without a code. Workspaces that require two-step verification will ask you to
+                  sign in again once.
+                </Callout>
+              )}
               <RecoveryCodesPanel
                 codes={step.codes}
                 email={queryClient.getQueryData(meQuery.queryKey)?.email}
@@ -241,7 +258,7 @@ function ScanStep({
   onCancel: () => void;
   onRestart: () => void;
   onAlreadyEnabled: () => void;
-  onEnabled: (codes: string[]) => void;
+  onEnabled: (codes: string[], upgraded: boolean) => void;
 }) {
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -260,10 +277,11 @@ function ScanStep({
     setSubmitting(true);
     try {
       const result = await authApi.mfaEnable(normaliseTotp(value));
-      // This session is now MFA-verified: install the new token immediately, not
-      // when "Done" is clicked (spec §4.7).
-      if (result.accessToken && result.expiresIn) installToken(result.accessToken, result.expiresIn);
-      onEnabled(result.recoveryCodes);
+      // This session is now verified with a second factor: install the replacement
+      // token right away, not when "Done" is clicked. Other devices were signed out.
+      const upgraded = !!(result.accessToken && result.expiresIn);
+      if (upgraded) installToken(result.accessToken!, result.expiresIn!);
+      onEnabled(result.recoveryCodes, upgraded);
     } catch (err) {
       setSubmitting(false);
       if (rateLimit.catch(err)) return;
@@ -417,7 +435,7 @@ export function RegenerateCodesDialog({ open, onOpenChange }: { open: boolean; o
             <DialogHeader
               icon={<RefreshCw />}
               title="Generate new recovery codes"
-              description="You'll get 10 new codes, and every existing code stops working."
+              description="You'll get a new set of codes, and every code you have now stops working."
             />
             <DialogBody className="grid gap-4">
               <Field label="Password" error={errors.password}>
@@ -483,6 +501,14 @@ export function DisableMfaDialog({ open, onOpenChange }: { open: boolean; onOpen
       await authApi.mfaDisable(
         mode === 'totp' ? { password, code: normaliseTotp(code) } : { password, recoveryCode: recoveryCode.trim() },
       );
+      // The token in memory still claims a second factor until it expires; renew it
+      // now so this session's assurance matches the account (spec §4).
+      try {
+        await refreshAccessToken();
+      } catch {
+        /* offline or throttled: it renews on the next request */
+      }
+      if (!hasActiveSession()) return;
       refreshMfaState();
       toast.success('Two-step verification is off', {
         description: 'You can turn it back on at any time.',
