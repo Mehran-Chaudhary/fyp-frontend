@@ -1,10 +1,13 @@
 import { infiniteQueryOptions, keepPreviousData, queryOptions } from '@tanstack/react-query';
 import {
+  agentsApi,
   apiKeysApi,
   authApi,
+  conversationsApi,
   documentsApi,
   invitationsApi,
   knowledgeBasesApi,
+  llmApi,
   membersApi,
   organizationsApi,
   permissionsApi,
@@ -14,12 +17,17 @@ import {
   workspaceApi,
 } from './api/endpoints';
 import type {
+  AgentSummary,
+  ConversationScope,
   CurrentUser,
   KnowledgeBase,
+  ListAgentsParams,
+  ListConversationsParams,
   ListDocumentsParams,
   ListInvitationsParams,
   ListKnowledgeBasesParams,
   ListMembersParams,
+  MessagePage,
 } from './api/types';
 import { anyInProgress, processingPollInterval } from './knowledge/polling';
 import { hashString } from './utils';
@@ -96,6 +104,32 @@ export const queryKeys = {
   pii: (workspaceId: string) => ['ws', workspaceId, 'pii'] as const,
   piiEntityTypes: (workspaceId: string) => ['ws', workspaceId, 'pii', 'types'] as const,
   piiPolicy: (workspaceId: string) => ['ws', workspaceId, 'pii', 'policy'] as const,
+
+  // ── Phase 4 (spec §9.1) ──
+  agents: (workspaceId: string) => ['ws', workspaceId, 'agents'] as const,
+  agentsList: (workspaceId: string, params: ListAgentsParams) => ['ws', workspaceId, 'agents', 'list', params] as const,
+  /** Every agent you can see, all pages: names for usage rows, pickers. */
+  agentsAll: (workspaceId: string) => ['ws', workspaceId, 'agents', 'all'] as const,
+  agent: (workspaceId: string) => ['ws', workspaceId, 'agent'] as const,
+  agentDetail: (workspaceId: string, agentId: string) => ['ws', workspaceId, 'agent', agentId] as const,
+  agentVersions: (workspaceId: string, agentId: string) => ['ws', workspaceId, 'agent', agentId, 'versions'] as const,
+  agentVersionsPage: (workspaceId: string, agentId: string, page: number) =>
+    ['ws', workspaceId, 'agent', agentId, 'versions', page] as const,
+  /** Immutable: cached for the session. */
+  agentVersion: (workspaceId: string, agentId: string, version: number) =>
+    ['ws', workspaceId, 'agent', agentId, 'version', version] as const,
+  conversations: (workspaceId: string) => ['ws', workspaceId, 'conversations'] as const,
+  conversationsList: (workspaceId: string, scope: ConversationScope, filters: Omit<ListConversationsParams, 'scope'>) =>
+    ['ws', workspaceId, 'conversations', scope, filters] as const,
+  conversation: (workspaceId: string) => ['ws', workspaceId, 'conversation'] as const,
+  conversationDetail: (workspaceId: string, conversationId: string) => ['ws', workspaceId, 'conversation', conversationId] as const,
+  /** An infinite query keyed by `before`. Never revealed pages (§9.1). */
+  conversationMessages: (workspaceId: string, conversationId: string) =>
+    ['ws', workspaceId, 'conversation', conversationId, 'messages'] as const,
+  llm: (workspaceId: string) => ['ws', workspaceId, 'llm'] as const,
+  llmModels: (workspaceId: string) => ['ws', workspaceId, 'llm', 'models'] as const,
+  llmPolicy: (workspaceId: string) => ['ws', workspaceId, 'llm', 'policy'] as const,
+  llmUsage: (workspaceId: string, from: string, to: string) => ['ws', workspaceId, 'llm', 'usage', from, to] as const,
 };
 
 /** What a page of a document's redaction report depends on. */
@@ -449,4 +483,120 @@ export const piiPolicyQuery = (workspaceId: string) =>
     queryFn: ({ signal }) => piiApi.policy(workspaceId, signal),
     staleTime: 60_000,
     retry: false,
+  });
+
+// ── Phase 4 (spec §9: keys start with the canonical workspace id; content lives in memory only) ──
+
+/** P4-API-01. Only agents you can see; name A→Z always. */
+export const agentsQuery = (workspaceId: string, params: ListAgentsParams) =>
+  queryOptions({
+    queryKey: queryKeys.agentsList(workspaceId, params),
+    queryFn: ({ signal }) => agentsApi.list(workspaceId, params, signal),
+    placeholderData: keepPreviousData,
+  });
+
+/** Every agent you can see (at most 2,000): pickers and the usage page's names. */
+export const allAgentsQuery = (workspaceId: string) =>
+  queryOptions({
+    queryKey: queryKeys.agentsAll(workspaceId),
+    queryFn: async ({ signal }): Promise<{ items: AgentSummary[]; complete: boolean }> =>
+      fetchAllPages((page) => agentsApi.list(workspaceId, { page, limit: 100 }, signal), 20),
+    staleTime: 60_000,
+  });
+
+/** P4-API-03. Refetched before the editor opens (P4-G05). */
+export const agentQuery = (workspaceId: string, agentId: string) =>
+  queryOptions({
+    queryKey: queryKeys.agentDetail(workspaceId, agentId),
+    queryFn: ({ signal }) => agentsApi.get(workspaceId, agentId, signal),
+  });
+
+/** P4-API-08, 20 a page. Each version carries its whole configuration. */
+export const agentVersionsQuery = (workspaceId: string, agentId: string, page: number) =>
+  queryOptions({
+    queryKey: queryKeys.agentVersionsPage(workspaceId, agentId, page),
+    queryFn: ({ signal }) => agentsApi.versions(workspaceId, agentId, page, 20, signal),
+    placeholderData: keepPreviousData,
+  });
+
+/** P4-API-09. Versions never change, so they're never refetched. */
+export const agentVersionQuery = (workspaceId: string, agentId: string, version: number) =>
+  queryOptions({
+    queryKey: queryKeys.agentVersion(workspaceId, agentId, version),
+    queryFn: ({ signal }) => agentsApi.version(workspaceId, agentId, version, signal),
+    staleTime: Infinity,
+    gcTime: 30 * 60_000,
+  });
+
+/** P4-API-12, newest activity first. */
+export const conversationsQuery = (
+  workspaceId: string,
+  scope: ConversationScope,
+  filters: Omit<ListConversationsParams, 'scope'>,
+) =>
+  queryOptions({
+    queryKey: queryKeys.conversationsList(workspaceId, scope, filters),
+    queryFn: ({ signal }) => conversationsApi.list(workspaceId, { ...filters, scope }, signal),
+    placeholderData: keepPreviousData,
+  });
+
+/** P4-API-12 as an endless list (the chat sidebar). */
+export const conversationsInfiniteQuery = (
+  workspaceId: string,
+  scope: ConversationScope,
+  filters: Omit<ListConversationsParams, 'scope' | 'page'>,
+) =>
+  infiniteQueryOptions({
+    queryKey: [...queryKeys.conversationsList(workspaceId, scope, filters), 'infinite'] as const,
+    queryFn: ({ pageParam, signal }) => conversationsApi.list(workspaceId, { ...filters, scope, page: pageParam }, signal),
+    initialPageParam: 1,
+    getNextPageParam: (last) => (last.pagination.hasNextPage ? last.pagination.page + 1 : undefined),
+  });
+
+/** P4-API-14. Title, counts and classification move with every turn. */
+export const conversationQuery = (workspaceId: string, conversationId: string) =>
+  queryOptions({
+    queryKey: queryKeys.conversationDetail(workspaceId, conversationId),
+    queryFn: ({ signal }) => conversationsApi.get(workspaceId, conversationId, signal),
+  });
+
+export const MESSAGE_PAGE_SIZE = 50;
+
+/**
+ * P4-API-17 as an infinite query: the first page is the newest, each next page is
+ * older (`before`), until `nextBefore` is null. Masked or visible pages only: a
+ * revealed page is never cached (§9.1).
+ */
+export const conversationMessagesQuery = (workspaceId: string, conversationId: string) =>
+  infiniteQueryOptions({
+    queryKey: queryKeys.conversationMessages(workspaceId, conversationId),
+    queryFn: ({ pageParam, signal }): Promise<MessagePage> =>
+      conversationsApi.messages(workspaceId, conversationId, { limit: MESSAGE_PAGE_SIZE, before: pageParam }, signal),
+    initialPageParam: undefined as number | undefined,
+    getNextPageParam: (last) => last.nextBefore ?? undefined,
+  });
+
+/** P4-API-22. The server caches the endpoint's list for 60 s. */
+export const llmModelsQuery = (workspaceId: string) =>
+  queryOptions({
+    queryKey: queryKeys.llmModels(workspaceId),
+    queryFn: ({ signal }) => llmApi.models(workspaceId, signal),
+    staleTime: 60_000,
+  });
+
+/** P4-API-23. Takes effect on the next request everywhere. */
+export const llmPolicyQuery = (workspaceId: string) =>
+  queryOptions({
+    queryKey: queryKeys.llmPolicy(workspaceId),
+    queryFn: ({ signal }) => llmApi.policy(workspaceId, signal),
+    staleTime: 60_000,
+  });
+
+/** P4-API-25 for one window. */
+export const llmUsageQuery = (workspaceId: string, from: string, to: string) =>
+  queryOptions({
+    queryKey: queryKeys.llmUsage(workspaceId, from, to),
+    queryFn: ({ signal }) => llmApi.usage(workspaceId, { from, to }, signal),
+    placeholderData: keepPreviousData,
+    staleTime: 60_000,
   });

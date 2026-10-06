@@ -156,13 +156,87 @@ export const router = createBrowserRouter([
                 index: true,
                 lazy: () => import('@/features/shell/home-page').then((m) => ({ Component: m.HomePage })),
               },
-              ...(['agents', 'workflows', 'audit'] as const).map((section) => ({
+              ...(['workflows', 'audit'] as const).map((section) => ({
                 path: section,
                 lazy: () =>
                   import('@/features/shell/section-page').then((m) => ({
                     Component: () => <m.SectionPage section={section} />,
                   })),
               })),
+
+              // ── Agents, models & conversational AI (Phase 4 §5) ──
+              {
+                path: 'agents',
+                lazy: () => import('@/features/agents/agents-page').then((m) => ({ Component: m.AgentsPage })),
+              },
+              {
+                path: 'agents/new',
+                lazy: () => import('@/features/agents/editor/agent-edit-pages').then((m) => ({ Component: m.NewAgentPage })),
+              },
+              {
+                path: 'agents/:agentId',
+                lazy: () => import('@/features/agents/agent/agent-layout').then((m) => ({ Component: m.AgentLayout })),
+                children: [
+                  {
+                    index: true,
+                    lazy: () => import('@/features/agents/agent/agent-overview').then((m) => ({ Component: m.AgentOverviewTab })),
+                  },
+                  {
+                    path: 'edit',
+                    lazy: () => import('@/features/agents/editor/agent-edit-pages').then((m) => ({ Component: m.AgentEditTab })),
+                  },
+                  {
+                    path: 'versions',
+                    lazy: () => import('@/features/agents/agent/versions-tab').then((m) => ({ Component: m.AgentVersionsTab })),
+                  },
+                  {
+                    path: 'preview',
+                    lazy: () => import('@/features/agents/agent/preview-tab').then((m) => ({ Component: m.AgentPreviewTab })),
+                  },
+                ],
+              },
+              {
+                // The conversation list stays mounted beside the thread; the page fills the viewport.
+                path: 'chat',
+                handle: { fill: true },
+                lazy: () => import('@/features/chat/chat-layout').then((m) => ({ Component: m.ChatLayout })),
+                children: [
+                  {
+                    index: true,
+                    lazy: () => import('@/features/chat/chat-layout').then((m) => ({ Component: m.ChatHome })),
+                  },
+                  {
+                    path: 'new',
+                    lazy: () => import('@/features/chat/draft-thread').then((m) => ({ Component: m.DraftThread })),
+                  },
+                  {
+                    path: ':conversationId',
+                    lazy: () => import('@/features/chat/conversation-page').then((m) => ({ Component: m.ConversationPage })),
+                  },
+                ],
+              },
+              {
+                path: 'supervision',
+                handle: { wide: true },
+                lazy: () => import('@/features/supervision/supervision-page').then((m) => ({ Component: m.SupervisionPage })),
+                children: [
+                  { index: true, Component: () => null },
+                  {
+                    path: ':conversationId',
+                    lazy: () =>
+                      import('@/features/supervision/supervision-drawer').then((m) => ({ Component: m.SupervisionDrawer })),
+                  },
+                ],
+              },
+              {
+                path: 'playground',
+                handle: { fill: true },
+                lazy: () => import('@/features/playground/playground-page').then((m) => ({ Component: m.PlaygroundPage })),
+              },
+              {
+                path: 'usage',
+                lazy: () => import('@/features/usage/usage-page').then((m) => ({ Component: m.UsagePage })),
+              },
 
               // ── Knowledge (Phase 3 §5) ──
               {
@@ -328,6 +402,11 @@ export const router = createBrowserRouter([
                     path: 'privacy',
                     lazy: () =>
                       import('@/features/privacy/privacy-settings-page').then((m) => ({ Component: m.PrivacySettingsPage })),
+                  },
+                  {
+                    // Phase 4 §5.8: model catalogue, effective limits and the model policy.
+                    path: 'models',
+                    lazy: () => import('@/features/models/models-settings-page').then((m) => ({ Component: m.ModelsSettingsPage })),
                   },
                   {
                     path: 'danger',

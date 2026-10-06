@@ -16,7 +16,7 @@ export function SettingsLayout() {
     <div className="grid grid-cols-1 gap-6">
       <PageHeader
         title="Settings"
-        description={`The profile, defaults, security policy, machine access and privacy of ${workspace.name}.`}
+        description={`The profile, defaults, security policy, machine access, privacy and models of ${workspace.name}.`}
       />
       {tabs.length > 0 ? (
         <>
@@ -25,7 +25,10 @@ export function SettingsLayout() {
         </>
       ) : (
         <Card>
-          <NoAccessState permissions={['workspace:read', 'security:read', 'apikey:read', 'pii:policy:read']} workspaceName={workspace.name} />
+          <NoAccessState
+            permissions={['workspace:read', 'security:read', 'apikey:read', 'pii:policy:read', 'llm:invoke', 'agent:read']}
+            workspaceName={workspace.name}
+          />
         </Card>
       )}
     </div>

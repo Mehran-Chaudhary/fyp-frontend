@@ -1,7 +1,31 @@
 import { withAuthLock } from './auth-lock';
-import { call, callPaginated, download, request, workspacePath } from './client';
+import { call, callPaginated, download, openEventStream, request, workspacePath } from './client';
+import type { SseMessage } from './sse';
 import type {
   AcceptInvitationResponse,
+  Agent,
+  AgentSummary,
+  AgentVersion,
+  ChatCompletion,
+  Conversation,
+  CreateAgentInput,
+  CreateConversationInput,
+  DirectChatInput,
+  ListAgentsParams,
+  ListConversationsParams,
+  ListMessagesParams,
+  LlmModels,
+  LlmPolicy,
+  MessagePage,
+  PromptPreview,
+  PromptPreviewInput,
+  RestoreAgentVersionInput,
+  SendMessageInput,
+  TurnResult,
+  UpdateAgentInput,
+  UpdateConversationInput,
+  UpdateLlmPolicyInput,
+  UsageSummary,
   AccessScope,
   AnalyzeResult,
   AnalyzeTextRequest,
@@ -598,5 +622,197 @@ export const ragApi = {
   accessScope: (workspaceId: string, signal?: AbortSignal) => {
     const [path, scope] = workspacePath(workspaceId, '/rag/access-scope');
     return call<AccessScope>(path, { ...scope, signal });
+  },
+};
+
+// ── Phase 4: agents, models & conversational AI (spec §7: 25 operations) ────
+
+/** P4-API-18 and P4-API-20: the server allows 300 s (a generation is capped at 240 s); wait a little longer. */
+const INFERENCE_TIMEOUT_MS = 310_000;
+/** P4-API-11: the retrieval budget is 60 s. */
+const PREVIEW_TIMEOUT_MS = 65_000;
+
+export const agentsApi = {
+  /** P4-API-01. Only agents you can see (§3.2), always name A→Z: `sortBy` is ignored (P4-G08). */
+  list: (workspaceId: string, params: ListAgentsParams = {}, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, '/agents');
+    return callPaginated<AgentSummary>(path, { ...scope, query: { ...params }, signal });
+  },
+
+  /** P4-API-02. A private draft at version 1. Only `name` is required. */
+  create: (workspaceId: string, body: CreateAgentInput) => {
+    const [path, scope] = workspacePath(workspaceId, '/agents');
+    return call<Agent>(path, { ...scope, method: 'POST', body });
+  },
+
+  /** P4-API-03. Hidden, unknown and deleted agents all answer 404 AGENT_NOT_FOUND. */
+  get: (workspaceId: string, agentId: string, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, `/agents/${id(agentId)}`);
+    return call<Agent>(path, { ...scope, signal });
+  },
+
+  /**
+   * P4-API-04. Send only what changed, `parameters` whole, plus `expectedVersion`
+   * (Appendix A `agentPatch`). Behaviour changes append a version; identity and
+   * access don't.
+   */
+  update: (workspaceId: string, agentId: string, body: UpdateAgentInput) => {
+    const [path, scope] = workspacePath(workspaceId, `/agents/${id(agentId)}`);
+    return call<Agent>(path, { ...scope, method: 'PATCH', body });
+  },
+
+  /** P4-API-05. Soft and final: its conversations stay readable but refuse new turns (409). */
+  remove: (workspaceId: string, agentId: string) => {
+    const [path, scope] = workspacePath(workspaceId, `/agents/${id(agentId)}`);
+    return call<{ deleted: true }>(path, { ...scope, method: 'DELETE' });
+  },
+
+  /** P4-API-06. Idempotent: publishing again keeps the original `publishedAt`. */
+  publish: (workspaceId: string, agentId: string) => {
+    const [path, scope] = workspacePath(workspaceId, `/agents/${id(agentId)}/publish`);
+    return call<Agent>(path, { ...scope, method: 'POST' });
+  },
+
+  /** P4-API-07. Idempotent. Members lose the agent at once; their conversations stay readable. */
+  unpublish: (workspaceId: string, agentId: string) => {
+    const [path, scope] = workspacePath(workspaceId, `/agents/${id(agentId)}/unpublish`);
+    return call<Agent>(path, { ...scope, method: 'POST' });
+  },
+
+  /** P4-API-08. Newest first, each with its full configuration (a heavy call). `limit` is capped at 50. */
+  versions: (workspaceId: string, agentId: string, page: number, limit = 20, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, `/agents/${id(agentId)}/versions`);
+    return callPaginated<AgentVersion>(path, { ...scope, query: { page, limit: Math.min(limit, 50) }, signal });
+  },
+
+  /** P4-API-09. Versions are immutable. */
+  version: (workspaceId: string, agentId: string, version: number, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, `/agents/${id(agentId)}/versions/${Math.trunc(version)}`);
+    return call<AgentVersion>(path, { ...scope, signal });
+  },
+
+  /** P4-API-10. Appends a copy of the version; history is never rewritten. */
+  restore: (workspaceId: string, agentId: string, version: number, body: RestoreAgentVersionInput) => {
+    const [path, scope] = workspacePath(workspaceId, `/agents/${id(agentId)}/versions/${Math.trunc(version)}/restore`);
+    return call<Agent>(path, { ...scope, method: 'POST', body });
+  },
+
+  /**
+   * P4-API-11. Builds the turn as a send would (retrieval as you, budgeting, masking,
+   * egress scan) without calling the model or storing anything. Shares the rag
+   * throttle. The answer is sensitive: never cached.
+   */
+  promptPreview: (workspaceId: string, agentId: string, body: PromptPreviewInput, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, `/agents/${id(agentId)}/prompt-preview`);
+    return call<PromptPreview>(path, { ...scope, method: 'POST', body, timeoutMs: PREVIEW_TIMEOUT_MS, signal });
+  },
+};
+
+export const conversationsApi = {
+  /** P4-API-12. `scope: 'all'` needs conversation:read_all; other people's titles arrive masked. */
+  list: (workspaceId: string, params: ListConversationsParams = {}, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, '/conversations');
+    return callPaginated<Conversation>(path, { ...scope, query: { ...params }, signal });
+  },
+
+  /** P4-API-13. No model call. The title stays empty until the first question unless one is given. */
+  create: (workspaceId: string, body: CreateConversationInput) => {
+    const [path, scope] = workspacePath(workspaceId, '/conversations');
+    return call<Conversation>(path, { ...scope, method: 'POST', body });
+  },
+
+  /** P4-API-14. Someone else's (supervision) comes back with a masked title and `isOwner: false`. */
+  get: (workspaceId: string, conversationId: string, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, `/conversations/${id(conversationId)}`);
+    return call<Conversation>(path, { ...scope, signal });
+  },
+
+  /** P4-API-15. Owner only: rename, archive, unarchive. */
+  update: (workspaceId: string, conversationId: string, body: UpdateConversationInput) => {
+    const [path, scope] = workspacePath(workspaceId, `/conversations/${id(conversationId)}`);
+    return call<Conversation>(path, { ...scope, method: 'PATCH', body });
+  },
+
+  /** P4-API-16. The conversation's key is destroyed: its messages are unrecoverable at once. */
+  remove: (workspaceId: string, conversationId: string) => {
+    const [path, scope] = workspacePath(workspaceId, `/conversations/${id(conversationId)}`);
+    return call<{ deleted: true }>(path, { ...scope, method: 'DELETE' });
+  },
+
+  /**
+   * P4-API-17. The newest `limit` messages before `before`, chronologically. Every
+   * message is re-checked against your access today (withheld ones have no content).
+   * `reveal` needs pii:reveal, is audited, and its pages are never cached.
+   */
+  messages: (workspaceId: string, conversationId: string, params: ListMessagesParams = {}, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, `/conversations/${id(conversationId)}/messages`);
+    return call<MessagePage>(path, {
+      ...scope,
+      // The server reads only the literal 'true'.
+      query: { limit: params.limit, before: params.before, reveal: params.reveal ? 'true' : undefined },
+      signal,
+    });
+  },
+
+  /**
+   * P4-API-18. The whole turn in one answer. A timeout or dropped connection leaves
+   * the outcome unknown: reconcile with a read, never resend blindly (§9.4).
+   */
+  send: (workspaceId: string, conversationId: string, body: SendMessageInput, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, `/conversations/${id(conversationId)}/messages`);
+    return call<TurnResult>(path, { ...scope, method: 'POST', body, timeoutMs: INFERENCE_TIMEOUT_MS, signal });
+  },
+
+  /** P4-API-19. The same turn as events; read with `postEventStream` (lib/agents/stream). */
+  stream: (
+    workspaceId: string,
+    conversationId: string,
+    body: SendMessageInput,
+    options: { onMessage: (message: SseMessage) => void; signal?: AbortSignal },
+  ) => {
+    const [path, scope] = workspacePath(workspaceId, `/conversations/${id(conversationId)}/messages/stream`);
+    return openEventStream(path, { ...scope, body, ...options });
+  },
+};
+
+export const llmApi = {
+  /** P4-API-20. Masked before it leaves; nothing is stored except a content-free usage record. */
+  chat: (workspaceId: string, body: DirectChatInput, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, '/llm/chat');
+    return call<ChatCompletion>(path, { ...scope, method: 'POST', body, timeoutMs: INFERENCE_TIMEOUT_MS, signal });
+  },
+
+  /** P4-API-21. Direct chat as events. A context overflow arrives as an `error` event here. */
+  chatStream: (
+    workspaceId: string,
+    body: DirectChatInput,
+    options: { onMessage: (message: SseMessage) => void; signal?: AbortSignal },
+  ) => {
+    const [path, scope] = workspacePath(workspaceId, '/llm/chat/stream');
+    return openEventStream(path, { ...scope, body, ...options });
+  },
+
+  /** P4-API-22. Fetched from the endpoint and cached there for 60 s; `verified: false` when it couldn't be asked. */
+  models: (workspaceId: string, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, '/llm/models');
+    return call<LlmModels>(path, { ...scope, signal });
+  },
+
+  /** P4-API-23. `effective` is what requests actually get. */
+  policy: (workspaceId: string, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, '/llm/policy');
+    return call<LlmPolicy>(path, { ...scope, signal });
+  },
+
+  /** P4-API-24. A partial update despite PUT; a stale `expectedVersion` answers 409 RESOURCE_CONFLICT. */
+  updatePolicy: (workspaceId: string, body: UpdateLlmPolicyInput) => {
+    const [path, scope] = workspacePath(workspaceId, '/llm/policy');
+    return call<LlmPolicy>(path, { ...scope, method: 'PUT', body, localCodes: ['RESOURCE_CONFLICT'] });
+  },
+
+  /** P4-API-25. Every model call in the workspace, workflows included. Defaults to the last 30 days. */
+  usage: (workspaceId: string, window: { from?: string; to?: string } = {}, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, '/llm/usage');
+    return call<UsageSummary>(path, { ...scope, query: { from: window.from, to: window.to }, signal });
   },
 };

@@ -8,7 +8,8 @@ import { Skeleton } from '@/components/ui/misc';
 import { Sheet } from '@/components/ui/sheet';
 import { Spinner } from '@/components/ui/spinner';
 import { Tooltip } from '@/components/ui/tooltip';
-import { knowledgeBaseQuery, mfaQuery } from '@/lib/queries';
+import { conversationTitle } from '@/lib/agents/messages';
+import { agentQuery, conversationQuery, knowledgeBaseQuery, mfaQuery } from '@/lib/queries';
 import { STORAGE_KEYS, storage } from '@/lib/storage';
 import { cn } from '@/lib/utils';
 import { SidebarKnowledgeBases } from '@/features/knowledge/sidebar-knowledge-bases';
@@ -32,8 +33,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   const workspace = useWorkspace();
   const [collapsed, setCollapsed] = useState(initialCollapsed);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  // Data-dense pages (the vault, search) ask for more room with `handle: { wide: true }`.
-  const wide = useMatches().some((match) => (match.handle as { wide?: boolean } | undefined)?.wide === true);
+  // Data-dense pages (the vault, search) ask for more room with `handle: { wide: true }`;
+  // chat screens fill the viewport and scroll inside (`handle: { fill: true }`).
+  const handles = useMatches().map((match) => match.handle as { wide?: boolean; fill?: boolean } | undefined);
+  const wide = handles.some((handle) => handle?.wide === true);
+  const fill = handles.some((handle) => handle?.fill === true);
 
   const toggleCollapsed = () => {
     const next = !collapsed;
@@ -57,7 +61,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <SidebarContent collapsed={false} onNavigate={() => setDrawerOpen(false)} />
       </Sheet>
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className={cn('flex min-w-0 flex-1 flex-col', fill && 'h-dvh')}>
         <TopBar>
           <Button
             variant="ghost"
@@ -71,9 +75,13 @@ export function AppShell({ children }: { children: ReactNode }) {
           <Breadcrumb workspaceName={workspace.name} slug={workspace.slug} />
         </TopBar>
         <EmailVerificationBanner />
-        <main className="flex-1 px-4 py-6 sm:px-8 sm:py-8">
-          <div className={cn('mx-auto w-full', wide ? 'max-w-[92rem]' : 'max-w-6xl')}>{children}</div>
-        </main>
+        {fill ? (
+          <main className="flex min-h-0 flex-1 flex-col">{children}</main>
+        ) : (
+          <main className="flex-1 px-4 py-6 sm:px-8 sm:py-8">
+            <div className={cn('mx-auto w-full', wide ? 'max-w-[92rem]' : 'max-w-6xl')}>{children}</div>
+          </main>
+        )}
       </div>
       <UploadWatcher />
     </div>
@@ -93,7 +101,19 @@ function Breadcrumb({ workspaceName, slug }: { workspaceName: string; slug: stri
 
   const section = segment ? SECTIONS[segment as SectionKey] : undefined;
   const page = segment ? PAGE_PARENTS[segment] : undefined;
-  if (section) {
+  if (section && segment === 'agents' && sub) {
+    // Agents › HR Policy Assistant › Versions
+    const tab = location.pathname.split('/')[5];
+    crumbs.push({ label: section.label, to: `${base}/agents` });
+    if (sub === 'new') crumbs.push({ label: 'New agent' });
+    else {
+      crumbs.push({ label: <AgentCrumb agentId={sub} />, to: tab ? `${base}/agents/${sub}` : undefined });
+      if (tab && AGENT_TAB_LABELS[tab]) crumbs.push({ label: AGENT_TAB_LABELS[tab] });
+    }
+  } else if (section && (segment === 'chat' || segment === 'supervision') && sub) {
+    crumbs.push({ label: section.label, to: `${base}/${segment}` });
+    crumbs.push({ label: <ConversationCrumb conversationId={sub} /> });
+  } else if (section) {
     const subLabel = sub ? SUBSECTION_LABELS[sub] : undefined;
     crumbs.push({ label: section.label, to: subLabel ? `${base}/${segment}` : undefined });
     if (subLabel) crumbs.push({ label: subLabel });
@@ -130,6 +150,22 @@ function Breadcrumb({ workspaceName, slug }: { workspaceName: string; slug: stri
       ))}
     </nav>
   );
+}
+
+const AGENT_TAB_LABELS: Record<string, string> = { edit: 'Configure', versions: 'Versions', preview: 'Prompt preview' };
+
+/** The agent's name once its page has loaded it; nothing is fetched just for the crumb. */
+function AgentCrumb({ agentId }: { agentId: string }) {
+  const workspace = useWorkspace();
+  const cached = useQuery({ ...agentQuery(workspace.id, agentId), enabled: false });
+  return <>{cached.data?.name ?? 'Agent'}</>;
+}
+
+/** The conversation's (possibly masked) title once loaded. */
+function ConversationCrumb({ conversationId }: { conversationId: string }) {
+  const workspace = useWorkspace();
+  const cached = useQuery({ ...conversationQuery(workspace.id, conversationId), enabled: false });
+  return <>{cached.data ? conversationTitle(cached.data) : 'Conversation'}</>;
 }
 
 /** The knowledge base's name once its page has loaded it; nothing is fetched just for the crumb. */
@@ -184,8 +220,8 @@ function SidebarContent({
           const visible = group.sections.filter((key) => can.any(...SECTIONS[key].anyOf));
           if (visible.length === 0) return null;
           return (
-            <div key={group.key} className="mt-5">
-              {collapsed ? (
+            <div key={group.key} className={group.label ? 'mt-5' : 'mt-0.5'}>
+              {!group.label ? null : collapsed ? (
                 <div className="mx-auto mb-2 h-px w-6 bg-line" aria-hidden />
               ) : (
                 <p className="mb-1.5 px-2.5 text-[11px] font-medium tracking-[0.08em] text-faint uppercase">{group.label}</p>

@@ -1,15 +1,29 @@
 import {
   Bot,
+  ChartColumn,
   Database,
+  FlaskConical,
   GitBranch,
   LayoutDashboard,
+  MessagesSquare,
   ScrollText,
   Settings,
+  UserRoundSearch,
   Users,
   type LucideIcon,
 } from 'lucide-react';
 
-export type SectionKey = 'agents' | 'workflows' | 'documents' | 'audit' | 'team' | 'settings';
+export type SectionKey =
+  | 'chat'
+  | 'agents'
+  | 'playground'
+  | 'workflows'
+  | 'documents'
+  | 'supervision'
+  | 'usage'
+  | 'audit'
+  | 'team'
+  | 'settings';
 
 export interface SectionDefinition {
   key: SectionKey;
@@ -18,7 +32,7 @@ export interface SectionDefinition {
   /** Visible when the member holds any of these (spec §5.4). */
   anyOf: string[];
   phase: number;
-  group: 'build' | 'govern';
+  group: 'main' | 'build' | 'govern';
   summary: string;
   bullets: string[];
 }
@@ -28,13 +42,27 @@ export interface SectionDefinition {
  * and make no backend calls (Phase 1 spec §5 "Permission-driven UI"). Phases follow
  * the five-phase delivery plan (docs/FRONTEND_PHASES.md).
  */
-export const LIVE_PHASE = 3;
+export const LIVE_PHASE = 4;
 
 /**
  * Workspace sections. A section shows a "planned" page until its phase ships; the
  * permission that reveals it is final.
  */
 export const SECTIONS: Record<SectionKey, SectionDefinition> = {
+  chat: {
+    key: 'chat',
+    label: 'Chat',
+    icon: MessagesSquare,
+    anyOf: ['conversation:read'],
+    phase: 4,
+    group: 'main',
+    summary: 'Talk to the agents published to you and watch answers stream in, with citations to the documents behind them.',
+    bullets: [
+      'Answers grounded in the knowledge bases you can read',
+      'Personal data masked before any model sees it',
+      'Every source cited and linked',
+    ],
+  },
   agents: {
     key: 'agents',
     label: 'AI agents',
@@ -43,12 +71,22 @@ export const SECTIONS: Record<SectionKey, SectionDefinition> = {
     phase: 4,
     group: 'build',
     summary:
-      "Build digital employees: give each one a persona, a system prompt, a locally hosted model, and exactly the knowledge and tools it's allowed to use.",
+      "Build digital employees: give each one a persona, a system prompt, a model, and exactly the knowledge it's allowed to use.",
     bullets: [
       'Persona, tone and system prompt editor with version history',
-      'Choice of local models served through Ollama',
-      'Knowledge-base and tool access, limited by role and data classification',
+      'Models chosen from the workspace allowlist',
+      'Knowledge-base access, limited by role and data classification',
     ],
+  },
+  playground: {
+    key: 'playground',
+    label: 'Playground',
+    icon: FlaskConical,
+    anyOf: ['llm:invoke'],
+    phase: 4,
+    group: 'build',
+    summary: 'Talk to a model directly, without an agent, to compare models and see personal-data masking at work.',
+    bullets: ['System prompt and sampling controls', 'Streaming or whole answers', 'A masking report for every reply'],
   },
   workflows: {
     key: 'workflows',
@@ -79,6 +117,26 @@ export const SECTIONS: Record<SectionKey, SectionDefinition> = {
       'Live pipeline status from upload to searchable',
       'A per-document PII report before anything reaches a model',
     ],
+  },
+  supervision: {
+    key: 'supervision',
+    label: 'Supervision',
+    icon: UserRoundSearch,
+    anyOf: ['conversation:read_all'],
+    phase: 4,
+    group: 'govern',
+    summary: "Review everyone's conversations with personal data masked. Every view is audited.",
+    bullets: ['Masked titles and messages', 'Reveal only with pii:reveal, behind a confirmation', 'Owner and agent filters'],
+  },
+  usage: {
+    key: 'usage',
+    label: 'Usage',
+    icon: ChartColumn,
+    anyOf: ['usage:read'],
+    phase: 4,
+    group: 'govern',
+    summary: 'Model calls, tokens, latency and masking overhead across the workspace.',
+    bullets: ['Outcomes from completed to throttled', 'Latency percentiles and time to first token', 'By model and by agent'],
   },
   audit: {
     key: 'audit',
@@ -115,7 +173,8 @@ export const SECTIONS: Record<SectionKey, SectionDefinition> = {
     label: 'Settings',
     icon: Settings,
     // Each settings tab has its own read permission (Phase 2 spec §3); any one reveals the section.
-    anyOf: ['workspace:read', 'security:read', 'apikey:read', 'pii:policy:read'],
+    // Models (Phase 4 §5.8) is readable with llm:invoke, llm:manage or agent:read.
+    anyOf: ['workspace:read', 'security:read', 'apikey:read', 'pii:policy:read', 'llm:invoke', 'llm:manage', 'agent:read'],
     phase: 2,
     group: 'govern',
     summary:
@@ -141,6 +200,7 @@ export const SUBSECTION_LABELS: Record<string, string> = {
   networks: 'Networks',
   'api-keys': 'API keys',
   privacy: 'Privacy',
+  models: 'Models',
   danger: 'Danger zone',
 };
 
@@ -158,9 +218,11 @@ export const PAGE_PARENTS: Record<string, { parent: SectionKey; label: string }>
   search: { parent: 'documents', label: 'Search' },
 };
 
-export const NAV_GROUPS: Array<{ key: 'build' | 'govern'; label: string; sections: SectionKey[] }> = [
-  { key: 'build', label: 'Build', sections: ['agents', 'workflows', 'documents'] },
-  { key: 'govern', label: 'Govern', sections: ['audit', 'team', 'settings'] },
+/** `label: null`: the items sit right under the dashboard, without a heading. */
+export const NAV_GROUPS: Array<{ key: 'main' | 'build' | 'govern'; label: string | null; sections: SectionKey[] }> = [
+  { key: 'main', label: null, sections: ['chat'] },
+  { key: 'build', label: 'Build', sections: ['agents', 'playground', 'workflows', 'documents'] },
+  { key: 'govern', label: 'Govern', sections: ['supervision', 'usage', 'audit', 'team', 'settings'] },
 ];
 
 /** Friendly names for the permission catalogue's categories. */

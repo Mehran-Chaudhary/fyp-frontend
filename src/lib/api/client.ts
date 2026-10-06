@@ -12,6 +12,7 @@ import {
   timeoutError,
   toApiError,
 } from './errors';
+import { createSseParser, type SseMessage } from './sse';
 import { currentSessionEpoch, endSession, getAccessToken, peekAccessToken, refreshAccessToken } from './token-manager';
 import type { ApiResult, Paginated, ResponseMeta } from './types';
 
@@ -51,8 +52,13 @@ export interface RequestOptions {
   localCodes?: readonly string[];
   /** Cancels the request (navigation, workspace switch). Never shown as an error. */
   signal?: AbortSignal;
-  /** The server gives up at 30 s; wait slightly longer so its answer arrives. */
-  timeoutMs?: number;
+  /**
+   * The server gives up at 30 s; wait slightly longer so its answer arrives. `null`:
+   * no total timeout (event streams, which use an idle watchdog instead).
+   */
+  timeoutMs?: number | null;
+  /** The Accept header. JSON unless a call says otherwise (event streams). */
+  accept?: string;
   /**
    * Bytes sent so far, 0…1. `fetch` can't report upload progress, so a request with
    * this callback travels over XMLHttpRequest instead, through the same pipeline
@@ -237,7 +243,7 @@ async function send<T>(path: string, options: RequestOptions, parse: Parser<T>, 
   const epoch = currentSessionEpoch();
 
   const headers: Record<string, string> = {
-    Accept: 'application/json',
+    Accept: options.accept ?? 'application/json',
     'X-Request-Id': newRequestId(),
   };
   const multipart = typeof FormData !== 'undefined' && body instanceof FormData;
@@ -262,8 +268,9 @@ async function send<T>(path: string, options: RequestOptions, parse: Parser<T>, 
   if (usedToken) headers.Authorization = `Bearer ${usedToken}`;
   signal?.throwIfAborted();
 
-  const timeout = AbortSignal.timeout(timeoutMs);
-  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  const timeout = timeoutMs === null ? null : AbortSignal.timeout(timeoutMs);
+  const signals = [signal, timeout].filter((item): item is AbortSignal => !!item);
+  const combined = signals.length === 1 ? signals[0] : signals.length > 1 ? AbortSignal.any(signals) : new AbortController().signal;
   const url = buildUrl(path, options.query);
   let res: Response;
   try {
@@ -273,7 +280,7 @@ async function send<T>(path: string, options: RequestOptions, parse: Parser<T>, 
       : await fetch(url, { method, headers, credentials: 'include', body: serializeBody(body), signal: combined });
   } catch (cause) {
     if (signal?.aborted) throw cause; // the caller cancelled: not an error to show
-    if (timeout.aborted) throw report(timeoutError(), options, path);
+    if (timeout?.aborted) throw report(timeoutError(), options, path);
     markUnreachable();
     throw report(networkError(), options, path);
   }
@@ -373,4 +380,98 @@ export async function download(
  */
 export function workspacePath(workspaceId: string, subpath = ''): [string, { workspaceId: string }] {
   return [`/organizations/${encodeURIComponent(workspaceId)}${subpath}`, { workspaceId }];
+}
+
+// ── Server-Sent Events over POST (Phase 4 spec §2, §4.4, §4.5) ──────────────
+
+/** The server writes `: keep-alive` every 15 s; three missed ones means the stream is gone. */
+export const STREAM_IDLE_TIMEOUT_MS = 45_000;
+
+export interface EventStreamOptions
+  extends Omit<RequestOptions, 'method' | 'body' | 'timeoutMs' | 'accept' | 'onUploadProgress'> {
+  body: unknown;
+  /** Called once per event, in order, with the raw SSE message. */
+  onMessage: (message: SseMessage) => void;
+  /** No bytes (data or heartbeat) for this long, before or after the stream opens: interrupted. */
+  idleTimeoutMs?: number;
+}
+
+/**
+ * How reading a stream ended. A refusal before the stream opened is not here: it is
+ * thrown as an ApiError, like any JSON call.
+ */
+export type EventStreamEnd =
+  /** The server closed the stream. Whether it sent `done` or `error` is the caller's to judge. */
+  | { kind: 'closed'; requestId?: string }
+  /** The caller's signal fired. `opened`: the server had already answered 200. */
+  | { kind: 'aborted'; opened: boolean; requestId?: string }
+  /** The connection dropped or went silent. The server may still have stored the turn. */
+  | { kind: 'interrupted'; opened: boolean; requestId?: string };
+
+/**
+ * POSTs a JSON body and reads the `text/event-stream` answer. It travels through the
+ * same pipeline as every other call: bearer token, refresh-and-replay on an expired
+ * token (a 401 always arrives as JSON before the stream opens, so the replay is
+ * safe), request id, JSON error envelope and global handler. There is no total
+ * timeout: answers can take minutes. An idle watchdog ends the read instead.
+ * Never reconnects: that would send the question again.
+ */
+export async function openEventStream(path: string, options: EventStreamOptions): Promise<EventStreamEnd> {
+  const { body, onMessage, idleTimeoutMs = STREAM_IDLE_TIMEOUT_MS, signal: callerSignal, ...rest } = options;
+  const idle = new AbortController();
+  let timer: number | undefined;
+  const touch = () => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => idle.abort(), idleTimeoutMs);
+  };
+  const signal = callerSignal ? AbortSignal.any([callerSignal, idle.signal]) : idle.signal;
+  let opened = false;
+  let requestId: string | undefined;
+
+  const read: Parser<EventStreamEnd> = async (res) => {
+    const type = res.headers.get('content-type') ?? '';
+    if (!type.includes('text/event-stream') || !res.body) throw unexpectedResponse(res);
+    opened = true;
+    requestId = res.headers.get('x-request-id') ?? undefined;
+    const parser = createSseParser(onMessage);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    const meta = metaFromHeaders(res);
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        touch();
+        parser.push(decoder.decode(value, { stream: true }));
+      }
+      parser.push(decoder.decode());
+      return { data: { kind: 'closed', requestId }, meta };
+    } catch {
+      // The body read failed: our own abort, or the connection broke.
+      const kind = callerSignal?.aborted ? 'aborted' : 'interrupted';
+      return { data: { kind, opened: true, requestId }, meta };
+    } finally {
+      reader.releaseLock();
+    }
+  };
+
+  touch();
+  try {
+    const { data } = await send<EventStreamEnd>(
+      path,
+      { ...rest, method: 'POST', body, accept: 'text/event-stream', timeoutMs: null, signal },
+      read,
+    );
+    return data;
+  } catch (error) {
+    if (callerSignal?.aborted) return { kind: 'aborted', opened, requestId };
+    if (idle.signal.aborted) return { kind: 'interrupted', opened, requestId };
+    // A POST that got no answer may still have reached the server: reconcile, never resend.
+    if (error instanceof ApiError && (error.code === 'NETWORK_ERROR' && error.source === 'client')) {
+      return { kind: 'interrupted', opened, requestId };
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }

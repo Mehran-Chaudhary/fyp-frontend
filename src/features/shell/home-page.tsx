@@ -7,6 +7,7 @@ import {
   Database,
   GitBranch,
   MailCheck,
+  MessageSquarePlus,
   ShieldCheck,
   TriangleAlert,
   UserPlus,
@@ -24,7 +25,8 @@ import { hasCode } from '@/lib/api/errors';
 import type { PermissionDefinition } from '@/lib/api/types';
 import { formatBytes, sumBytes } from '@/lib/knowledge/files';
 import { useDocumentTitle } from '@/lib/hooks';
-import { meQuery, mfaQuery, permissionCatalogueQuery, workspaceDetailsQuery } from '@/lib/queries';
+import { agentsQuery, conversationsQuery, meQuery, mfaQuery, permissionCatalogueQuery, workspaceDetailsQuery } from '@/lib/queries';
+import { conversationTitle } from '@/lib/agents/messages';
 import { toast, toastError } from '@/lib/toast';
 import { cn, formatDate, formatRelative, pluralize } from '@/lib/utils';
 import { useKnowledgeBases } from '@/features/knowledge/shared/use-knowledge-access';
@@ -51,14 +53,15 @@ export function HomePage() {
           Welcome, {me?.displayName ?? workspace.membership?.displayName ?? 'back'}.
         </h1>
         <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted">
-          This is your workspace's command center. Your team, roles, security policy and document vault are ready to set up;
-          agents arrive in Phase 4, and workflows, audit and analytics in Phase 5.
+          This is your workspace's command center: your team and its roles, the document vault, and the agents that answer from
+          it. Workflows, audit and analytics arrive in Phase 5.
         </p>
       </header>
 
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)]">
         <GettingStarted />
         <div className="grid gap-6">
+          <ConversationsCard />
           <VaultCard />
           <MembershipCard />
           <WorkspaceCard />
@@ -94,6 +97,8 @@ function GettingStarted() {
   const canInvite = can('member:invite');
   const seesVault = can('knowledgebase:read');
   const hasDocuments = knowledgeBases.list.some((knowledgeBase) => knowledgeBase.stats.documents > 0);
+  const agents = useQuery({ ...agentsQuery(workspace.id, { page: 1, limit: 1 }), enabled: can('agent:read') });
+  const hasAgents = (agents.data?.pagination.totalItems ?? 0) > 0;
 
   const resend = async () => {
     if (!me) return;
@@ -166,14 +171,22 @@ function GettingStarted() {
           } satisfies ChecklistItem,
         ]
       : []),
-    {
-      key: 'agent',
-      icon: <Bot />,
-      title: 'Build your first agent',
-      description: 'A digital employee with its own persona, local model and knowledge.',
-      state: 'soon',
-      phase: 4,
-    },
+    ...(can('agent:create') || hasAgents
+      ? [
+          {
+            key: 'agent',
+            icon: <Bot />,
+            title: 'Build your first agent',
+            description: 'A digital employee with its own persona, model and knowledge, answering with citations.',
+            state: hasAgents ? 'done' : agents.isPending ? 'loading' : 'todo',
+            action: (
+              <Button asChild variant="secondary" size="sm">
+                <Link to={`/w/${workspace.slug}/agents${can('agent:create') && !hasAgents ? '/new' : ''}`}>{hasAgents ? 'Open' : 'Create'}</Link>
+              </Button>
+            ),
+          } satisfies ChecklistItem,
+        ]
+      : []),
     {
       key: 'workflow',
       icon: <GitBranch />,
@@ -256,6 +269,63 @@ function StepMarker({ state, icon }: { state: ChecklistItem['state']; icon: Reac
     >
       {icon}
     </span>
+  );
+}
+
+// ── Conversations (Phase 4) ─────────────────────────────────────────────────
+
+function ConversationsCard() {
+  const workspace = useWorkspace();
+  const can = useCan();
+  const recent = useQuery({ ...conversationsQuery(workspace.id, 'mine', { page: 1, limit: 4, status: 'ACTIVE' }), enabled: can('conversation:read') });
+  if (!can('conversation:read')) return null;
+  const items = recent.data?.items ?? [];
+  const base = `/w/${workspace.slug}`;
+
+  return (
+    <Card>
+      <CardHeader
+        title="Recent conversations"
+        actions={
+          can('agent:execute') ? (
+            <Button asChild variant="ghost" size="xs">
+              <Link to={`${base}/chat`}>
+                <MessageSquarePlus />
+                Chat
+              </Link>
+            </Button>
+          ) : null
+        }
+      />
+      <CardBody>
+        {recent.isPending ? (
+          <div className="grid gap-2">
+            <Skeleton className="h-9 w-full" />
+            <Skeleton className="h-9 w-full" />
+          </div>
+        ) : recent.isError ? (
+          <ErrorState compact error={recent.error} onRetry={() => void recent.refetch()} retrying={recent.isFetching} />
+        ) : items.length === 0 ? (
+          <p className="text-[13px] leading-relaxed text-muted">
+            {can('agent:execute') ? 'No conversations yet. Ask any agent published to you; answers cite the documents behind them.' : 'No conversations yet.'}
+          </p>
+        ) : (
+          <ul className="-mx-2 grid gap-px">
+            {items.map((conversation) => (
+              <li key={conversation.id}>
+                <Link to={`${base}/chat/${conversation.id}`} className="flex items-baseline justify-between gap-3 rounded-lg px-2 py-2 hover:bg-well">
+                  <span className="min-w-0">
+                    <span className="block truncate text-[13px] font-medium text-ink">{conversationTitle(conversation)}</span>
+                    <span className="block truncate text-[12px] text-muted">{conversation.agentName ?? 'Deleted agent'}</span>
+                  </span>
+                  <span className="shrink-0 text-[12px] text-faint">{formatRelative(conversation.lastMessageAt ?? conversation.createdAt)}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardBody>
+    </Card>
   );
 }
 

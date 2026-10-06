@@ -6,7 +6,13 @@ import { isApiError } from './api/errors';
  * without (Phase 3 §6.5, §6.9): they won't change in the next few seconds, and
  * retrying spends a rate-limited budget.
  */
-const NOT_RETRYABLE: ReadonlySet<string> = new Set(['KNOWLEDGE_LAYER_NOT_CONFIGURED', 'PII_DETECTION_UNAVAILABLE']);
+const NOT_RETRYABLE: ReadonlySet<string> = new Set([
+  'KNOWLEDGE_LAYER_NOT_CONFIGURED',
+  'PII_DETECTION_UNAVAILABLE',
+  // Phase 4: configuration, and the 500 the egress check answers with.
+  'LLM_NOT_CONFIGURED',
+  'PII_EGRESS_BLOCKED',
+]);
 
 /**
  * Retry only what can get better on its own: network failures and 5xx, at most

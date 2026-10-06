@@ -187,6 +187,75 @@ export function messageFor(error: unknown): string {
       return error.message || "That doesn't exist any more.";
     case 'AUTH_SCHEME_NOT_ALLOWED':
       return 'This action needs a signed-in user, not an API key.';
+
+    // ── Phase 4 (spec §10) ──
+    case 'AGENT_NOT_FOUND':
+      // Never "access denied": a hidden agent must not be confirmed to exist (§3.2).
+      return "This agent doesn't exist or isn't available to you.";
+    case 'AGENT_NAME_TAKEN':
+      return 'Another agent already has this name. Names are unique, ignoring case.';
+    case 'AGENT_VERSION_CONFLICT': {
+      const current = typeof details.currentVersion === 'number' ? details.currentVersion : null;
+      return current !== null
+        ? `Someone saved version ${current} of this agent since you opened it.`
+        : 'Someone saved a newer version of this agent since you opened it.';
+    }
+    case 'AGENT_VERSION_NOT_FOUND':
+      return "That version doesn't exist.";
+    case 'AGENT_UNAVAILABLE':
+      return "The agent behind this conversation was deleted. Its history stays readable, but it can't answer any more.";
+    case 'AGENT_TOKEN_BUDGET_EXCEEDED':
+      return 'This answer used more than its token budget across tool calls, so it was stopped.';
+    case 'AGENT_CIRCUIT_OPEN':
+      return 'This agent is paused after repeated failures or unusual spending. Try again later.';
+    case 'CONVERSATION_NOT_FOUND':
+      return "This conversation doesn't exist or isn't available to you.";
+    case 'CONVERSATION_ARCHIVED':
+      return 'This conversation is archived. Unarchive it to continue.';
+    case 'CONVERSATION_BUSY':
+      return 'Still answering the previous question. Wait for it to finish, then send again.';
+    case 'CONVERSATION_TOKEN_BUDGET_EXCEEDED':
+      return 'This conversation has used its token budget. Start a new conversation to continue.';
+    case 'MESSAGE_DUPLICATE':
+      return 'This question was already sent.';
+    case 'LLM_NOT_CONFIGURED':
+      return "Chat isn't set up on this deployment yet.";
+    case 'LLM_MODEL_NOT_ALLOWED': {
+      const allowed = stringList(details.allowedModels);
+      return allowed.length
+        ? `That model isn't allowed in this workspace. Allowed: ${allowed.join(', ')}.`
+        : error.message || "That model isn't allowed in this workspace.";
+    }
+    case 'LLM_MODEL_NOT_FOUND':
+      return "The model server doesn't serve that model.";
+    case 'LLM_CONTEXT_OVERFLOW':
+      return "The message and the context it needs don't fit in the model's context window. Shorten the message.";
+    case 'LLM_BUSY':
+      return 'The model is busy with other requests. Try again in a few seconds.';
+    case 'LLM_UNAVAILABLE':
+      return details.reason === 'CIRCUIT_OPEN'
+        ? 'The model server failed repeatedly, so requests are paused for a moment. Try again shortly.'
+        : 'The model server is unavailable right now. Try again in a moment.';
+    case 'LLM_TIMEOUT':
+      return 'The model took too long to answer.';
+    case 'LLM_REJECTED':
+      return 'The model server refused this request.';
+    case 'LLM_RESPONSE_INVALID':
+      return "The model server sent an answer that couldn't be read.";
+    case 'TOKEN_RATE_LIMITED': {
+      const perMinute = typeof details.tokensPerMinute === 'number' ? details.tokensPerMinute : null;
+      return perMinute !== null
+        ? `This workspace is using model tokens faster than its limit of ${perMinute.toLocaleString()} a minute. Nothing was sent.`
+        : 'This workspace is using model tokens faster than its per-minute limit. Nothing was sent.';
+    }
+    case 'QUOTA_EXCEEDED':
+      return 'This workspace has used its model allowance for now. Nothing was sent.';
+    case 'PII_EGRESS_BLOCKED':
+      return 'Stopped to protect personal data: something sensitive survived masking, so nothing was sent to the model.';
+    case 'TOOL_NOT_FOUND':
+      return "A tool this agent uses doesn't exist any more.";
+    case 'TOOL_DISABLED':
+      return 'A tool this agent uses is turned off.';
     default:
       return error.message || 'Something went wrong.';
   }
@@ -233,6 +302,20 @@ export function titleFor(error: unknown, fallback = "That didn't work"): string 
     return 'Temporarily unavailable';
   }
   if (error.code === 'DOCUMENT_NOT_FOUND' || error.code === 'KNOWLEDGE_BASE_NOT_FOUND') return 'Not available';
+  if (error.code === 'AGENT_NOT_FOUND' || error.code === 'CONVERSATION_NOT_FOUND') return 'Not available';
+  if (error.code === 'TOKEN_RATE_LIMITED' || error.code === 'LLM_BUSY' || error.code === 'QUOTA_EXCEEDED') return 'Please wait';
+  if (error.code === 'PII_EGRESS_BLOCKED') return 'Stopped to protect personal data';
+  if (error.code === 'LLM_NOT_CONFIGURED') return 'Not set up yet';
+  if (error.code === 'LLM_CONTEXT_OVERFLOW') return 'Too long for the model';
+  if (
+    error.code === 'LLM_UNAVAILABLE' ||
+    error.code === 'LLM_TIMEOUT' ||
+    error.code === 'AGENT_CIRCUIT_OPEN' ||
+    error.code === 'LLM_REJECTED' ||
+    error.code === 'LLM_RESPONSE_INVALID'
+  ) {
+    return 'The model had a problem';
+  }
   if (error.status >= 500) return 'Server error';
   return fallback;
 }

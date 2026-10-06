@@ -883,6 +883,532 @@ export interface AnalyzeResult {
   timings: RedactionTimings;
 }
 
+// ── Phase 4: agents, conversations, models (spec §6) ────────────────────────
+
+export type AgentVisibility = 'PRIVATE' | 'WORKSPACE';
+export type AgentAccessMode = 'WORKSPACE' | 'RESTRICTED';
+export type AgentTone = 'neutral' | 'formal' | 'friendly' | 'concise';
+export type GroundingMode = 'STRICT' | 'BALANCED';
+
+/** Every key optional; absent means "the platform default". */
+export interface GenerationParameters {
+  /** 0–2 */
+  temperature?: number;
+  /** 0.01–1 */
+  topP?: number;
+  /** 1–500, Ollama only */
+  topK?: number;
+  /** 1–65,536, clamped (not refused) to the effective ceiling */
+  maxOutputTokens?: number;
+  /** 0.5–2, Ollama only */
+  repeatPenalty?: number;
+  /** An integer. */
+  seed?: number;
+  /** ≤4 strings of ≤32 characters */
+  stop?: string[];
+}
+
+export interface AgentPersona {
+  role: string | null;
+  tone: AgentTone;
+  language: string | null;
+  /** UI only: shown when a conversation opens; never sent to the model, never stored as a message. */
+  greeting: string | null;
+}
+
+export interface AgentRetrievalView {
+  enabled: boolean;
+  /** Only the bases you can read. */
+  knowledgeBaseIds: string[];
+  /** Attached bases you can't read; the server keeps them when you save. */
+  hiddenKnowledgeBases: number;
+  topK: number;
+  mode: RetrievalMode;
+  rerank: boolean;
+  maxContextTokens: number;
+  /** Dense mode only. */
+  minScore: number | null;
+  /** Caps the agent for everyone. */
+  maxClassification: Classification | null;
+}
+
+export interface AgentMemory {
+  maxMessages: number;
+  maxHistoryTokens: number;
+}
+
+export interface AgentTools {
+  toolIds: string[];
+  maxIterations: number;
+}
+
+export interface AgentConfigView {
+  persona: AgentPersona;
+  /** null: the workspace default model at the time of each turn. */
+  model: string | null;
+  parameters: GenerationParameters;
+  contextWindow: number | null;
+  retrieval: AgentRetrievalView;
+  memory: AgentMemory;
+  grounding: GroundingMode;
+  citations: boolean;
+  tools: AgentTools;
+}
+
+/** P4-API-01. No instructions and no configuration: open the detail for those. */
+export interface AgentSummary {
+  id: string;
+  name: string;
+  description: string | null;
+  visibility: AgentVisibility;
+  accessMode: AgentAccessMode;
+  currentVersion: number;
+  model: string | null;
+  role: string | null;
+  greeting: string | null;
+  /** Includes bases hidden from you. */
+  knowledgeBaseCount: number;
+  /** A user id. */
+  createdById: string | null;
+  publishedAt: string | null;
+  lastUsedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Mirrors agent:update. */
+  canEdit: boolean;
+}
+
+export interface Agent extends AgentSummary {
+  config: AgentConfigView;
+  /** The system prompt. Readable by everyone who can see the agent (P4-G03). */
+  instructions: string;
+  allowedRoleIds: string[];
+}
+
+export interface AgentVersion {
+  version: number;
+  config: AgentConfigView;
+  instructions: string;
+  /** SHA-256 hex of configuration plus instructions: equal digests behave identically. */
+  configDigest: string;
+  changeNote: string | null;
+  restoredFromVersion: number | null;
+  /** A user id. */
+  createdById: string | null;
+  createdAt: string;
+  isCurrent: boolean;
+}
+
+/** Writable configuration. Nested sections merge one level deep, except `parameters`, which replaces. */
+export interface AgentWrite {
+  persona?: Partial<AgentPersona>;
+  model?: string | null;
+  parameters?: GenerationParameters;
+  contextWindow?: number | null;
+  retrieval?: Partial<Omit<AgentRetrievalView, 'hiddenKnowledgeBases'>>;
+  memory?: Partial<AgentMemory>;
+  grounding?: GroundingMode;
+  citations?: boolean;
+  tools?: Partial<AgentTools>;
+  instructions?: string;
+  accessMode?: AgentAccessMode;
+  allowedRoleIds?: string[];
+}
+
+export interface CreateAgentInput extends AgentWrite {
+  name: string;
+  description?: string;
+}
+
+/** `null` only where it means clear/inherit/default (§6); omit a field to leave it alone (P4-G01). */
+export interface UpdateAgentInput extends AgentWrite {
+  name?: string;
+  description?: string | null;
+  changeNote?: string;
+  expectedVersion?: number;
+}
+
+export interface RestoreAgentVersionInput {
+  changeNote?: string;
+  expectedVersion?: number;
+}
+
+export interface ListAgentsParams {
+  page?: number;
+  /** ≤100 */
+  limit?: number;
+  /** Matches the name only. */
+  search?: string;
+  visibility?: AgentVisibility;
+}
+
+export interface ContextAccounting {
+  contextWindow: number;
+  promptBudget: number;
+  reservedForAnswer: number;
+  systemTokens: number;
+  passageTokens: number;
+  historyTokens: number;
+  userTokens: number;
+  passagesIncluded: number;
+  passagesDropped: number;
+  historyIncluded: number;
+  historyExcluded: number;
+}
+
+export type ChatRole = 'system' | 'user' | 'assistant';
+
+export interface PromptPreviewInput {
+  content: string;
+  /** Your own conversation with this agent: its history is included as the next turn would see it. */
+  conversationId?: string;
+}
+
+/** P4-API-11. Masked, but still internal text: never cached or persisted. */
+export interface PromptPreview {
+  model: string;
+  agentVersion: number;
+  promptTemplateVersion: number;
+  messages: Array<{ role: ChatRole; content: string }>;
+  context: ContextAccounting;
+  redaction: {
+    enabled: boolean;
+    degraded: boolean;
+    entities: number;
+    occurrences: number;
+    byType: Record<string, number>;
+    bySource: Record<string, number>;
+    detectors: string[];
+    timings: RedactionTimings;
+    egressFindings: unknown[];
+  };
+  retrieval: {
+    retrievalId: string;
+    passagesRetrieved: number;
+    passagesIncluded: number;
+    effectiveClearance: Classification;
+    knowledgeBasesSearched: number;
+  } | null;
+}
+
+export type ConversationStatus = 'ACTIVE' | 'ARCHIVED';
+export type ConversationScope = 'mine' | 'all';
+
+export interface Conversation {
+  id: string;
+  agentId: string;
+  /** Survives the agent's deletion. */
+  agentName: string | null;
+  /** Masked when it isn't yours; null until the first question, or when it couldn't be masked. */
+  title: string | null;
+  status: ConversationStatus;
+  messageCount: number;
+  lastMessageAt: string | null;
+  /** The high-water mark of what it drew on: it only ever rises. */
+  classification: Classification;
+  isOwner: boolean;
+  ownerKind: 'user' | 'api_key';
+  /** A user id. */
+  ownerUserId: string | null;
+  createdAt: string;
+}
+
+export interface ListConversationsParams {
+  page?: number;
+  /** ≤100 */
+  limit?: number;
+  scope?: ConversationScope;
+  agentId?: string;
+  status?: ConversationStatus;
+}
+
+export interface CreateConversationInput {
+  agentId: string;
+  /** ≤120 */
+  title?: string;
+}
+
+export interface UpdateConversationInput {
+  /** Non-empty, ≤120. */
+  title?: string;
+  status?: ConversationStatus;
+}
+
+export type MessageRole = 'USER' | 'ASSISTANT';
+export type MessageStatus = 'COMPLETE' | 'CANCELLED' | 'FAILED';
+export type ContentState = 'VISIBLE' | 'MASKED' | 'WITHHELD';
+export type WithheldReason = 'CLEARANCE' | 'COMPARTMENT' | 'SOURCE_DELETED' | 'REDACTION_UNAVAILABLE';
+
+export interface Citation {
+  /** "S1" */
+  tag: string;
+  documentId: string;
+  /** null when the document no longer exists; masked for supervisors. */
+  documentTitle: string | null;
+  knowledgeBaseId: string;
+  chunkId: string;
+  rank: number;
+  /** Comparable within one answer only: never a percentage. */
+  score: number;
+  /** The answer text contains [tag]. */
+  cited: boolean;
+}
+
+export interface MessageRedaction {
+  enabled: boolean;
+  /** Names couldn't be detected; only pattern types were masked. */
+  degraded: boolean;
+  entities: number;
+  byType: Record<string, number>;
+}
+
+export interface ToolCallRecord {
+  executionId: string;
+  tool: string;
+  status: 'ok' | 'error' | 'denied';
+  code?: string;
+  reason?: string;
+  durationMs: number;
+}
+
+export interface Message {
+  id: string;
+  sequence: number;
+  role: MessageRole;
+  status: MessageStatus;
+  /** null when withheld. */
+  content: string | null;
+  contentState: ContentState;
+  withheldReason?: WithheldReason;
+  classification: Classification;
+  citations: Citation[];
+  agentVersion: number | null;
+  model: string | null;
+  /** null on user messages. */
+  redaction: MessageRedaction | null;
+  errorCode: string | null;
+  toolCalls: ToolCallRecord[];
+  createdAt: string;
+}
+
+/** P4-API-17: chronological; `nextBefore` pages to older messages (null: the start). */
+export interface MessagePage {
+  messages: Message[];
+  nextBefore: number | null;
+  masked: boolean;
+  revealed: boolean;
+}
+
+export interface ListMessagesParams {
+  /** 1–100, default 50 */
+  limit?: number;
+  /** A sequence: messages strictly before it. */
+  before?: number;
+  /** Needs pii:reveal; ignored on your own conversation. Never cached. */
+  reveal?: boolean;
+}
+
+export interface SendMessageInput {
+  content: string;
+  /** Idempotency key: resending it answers 409 MESSAGE_DUPLICATE. */
+  clientMessageId?: string;
+  parameters?: { temperature?: number; maxOutputTokens?: number };
+  /** `knowledgeBaseIds` narrows to the intersection with the agent's bases. */
+  retrieval?: { enabled?: boolean; knowledgeBaseIds?: string[] };
+}
+
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  estimated: boolean;
+}
+
+export interface TurnResult {
+  conversationId: string;
+  userMessage: Message;
+  assistantMessage: Message;
+  usage: TokenUsage;
+  timings: {
+    retrievalMs: number;
+    redactionMs: number;
+    queueMs: number;
+    timeToFirstTokenMs: number | null;
+    generationMs: number;
+    totalMs: number;
+  };
+  retrieval: {
+    retrievalId: string | null;
+    passagesProvided: number;
+    passagesCited: number;
+    effectiveClearance: Classification | null;
+  };
+  context: ContextAccounting;
+}
+
+export interface ChatMessage {
+  role: ChatRole;
+  content: string;
+}
+
+export interface DirectChatInput {
+  /** 1–50, each ≤32,000 characters. */
+  messages: ChatMessage[];
+  model?: string;
+  parameters?: GenerationParameters;
+}
+
+export interface ChatCompletion {
+  invocationId: string;
+  model: string;
+  content: string;
+  finishReason: string | null;
+  usage: TokenUsage;
+  redaction: {
+    enabled: boolean;
+    degraded: boolean;
+    entitiesMasked: number;
+    byType: Record<string, number>;
+    placeholdersResolved: number;
+    placeholdersUnresolved: number;
+  };
+  timings: {
+    redactionMs: number;
+    queueMs: number;
+    timeToFirstTokenMs: number | null;
+    generationMs: number;
+    totalMs: number;
+  };
+}
+
+export interface LlmModel {
+  name: string;
+  family: string | null;
+  parameterSize: string | null;
+  quantization: string | null;
+  contextLength: number | null;
+  sizeBytes: number | null;
+  /** Reflects the workspace policy. */
+  allowed: boolean;
+  isDefault: boolean;
+}
+
+export interface LlmModels {
+  models: LlmModel[];
+  /** false: the endpoint couldn't be reached and the list comes from configuration. */
+  verified: boolean;
+}
+
+export interface LlmPolicy {
+  source: 'default' | 'workspace';
+  version: number;
+  /** Empty: every model the platform allows. */
+  allowedModels: string[];
+  defaultModel: string | null;
+  maxOutputTokens: number | null;
+  maxContextTokens: number | null;
+  /** What requests actually get. */
+  effective: {
+    defaultModel: string;
+    maxOutputTokens: number;
+    maxContextTokens: number;
+    /** Empty: unrestricted. */
+    platformAllowlist: string[];
+    /** The model endpoint's ceiling (LLM_MAX_CLASSIFICATION): no agent retrieves above it. */
+    maxClassification: Classification;
+  };
+}
+
+/** A partial update despite PUT. `null` returns a ceiling or the default to the platform's. */
+export interface UpdateLlmPolicyInput {
+  allowedModels?: string[];
+  defaultModel?: string | null;
+  maxOutputTokens?: number | null;
+  maxContextTokens?: number | null;
+  expectedVersion?: number;
+}
+
+export interface UsageSummary {
+  from: string;
+  to: string;
+  totals: {
+    invocations: number;
+    completed: number;
+    failed: number;
+    cancelled: number;
+    /** Masking unavailable. */
+    refused: number;
+    /** The egress check stopped it. */
+    blocked: number;
+    /** Governance refused it. */
+    throttled: number;
+    promptTokens: number;
+    completionTokens: number;
+    entitiesMasked: number;
+    degradedRedactions: number;
+    /** Rows whose token counts the endpoint didn't report. */
+    estimatedTokenCounts: number;
+  };
+  latencyMs: {
+    totalP50: number | null;
+    totalP95: number | null;
+    timeToFirstTokenP50: number | null;
+    timeToFirstTokenP95: number | null;
+  };
+  redactionOverhead: { p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; shareOfTotal: number | null };
+  byModel: Array<{ model: string; invocations: number; promptTokens: number; completionTokens: number; totalP50Ms: number | null }>;
+  /** `agentId: null` is direct chat. */
+  byAgent: Array<{ agentId: string | null; invocations: number; promptTokens: number; completionTokens: number }>;
+}
+
+// ── Phase 4 stream events (spec §4.5) ──
+
+export type TurnStage = 'retrieving' | 'redacting' | 'queued' | 'generating' | 'thinking' | 'tool';
+
+export interface TurnMeta {
+  conversationId: string;
+  agentId: string;
+  agentVersion: number;
+  model: string;
+  userMessageId: string;
+  assistantMessageId: string;
+}
+
+export interface QueueLoad {
+  inUse: number;
+  waiting: number;
+  capacity: number;
+}
+
+export type StatusEvent =
+  | ({ stage: 'queued' } & QueueLoad)
+  | { stage: 'tool'; tool: string; iteration: number }
+  | { stage: 'generating'; redaction?: { enabled: boolean; degraded: boolean; entitiesMasked: number } }
+  | { stage: 'retrieving' | 'redacting' | 'thinking' };
+
+/** The JSON error envelope's fields, plus the HTTP status the failure would have had. */
+export interface StreamErrorEvent {
+  code: string;
+  message: string;
+  status: number;
+  details?: Record<string, unknown>;
+  retryAfterSeconds?: number;
+}
+
+export type TurnStreamEvent =
+  | { event: 'meta'; data: TurnMeta }
+  | { event: 'status'; data: StatusEvent }
+  | { event: 'delta'; data: { text: string } }
+  | { event: 'tool'; data: ToolCallRecord }
+  | { event: 'done'; data: TurnResult }
+  | { event: 'error'; data: StreamErrorEvent };
+
+export type ChatStreamEvent =
+  | { event: 'meta'; data: { invocationId: string; model: string } }
+  | { event: 'status'; data: StatusEvent }
+  | { event: 'delta'; data: { text: string } }
+  | { event: 'done'; data: ChatCompletion }
+  | { event: 'error'; data: StreamErrorEvent };
+
 // ── Error codes (full list: backend src/common/enums/error-code.enum.ts) ────
 export type ErrorCode =
   | 'INTERNAL_SERVER_ERROR'
@@ -974,4 +1500,31 @@ export type ErrorCode =
   | 'OBJECT_STORAGE_UNAVAILABLE'
   | 'PII_DETECTION_UNAVAILABLE'
   | 'AUTH_SCHEME_NOT_ALLOWED'
+  // Phase 4
+  | 'AGENT_NOT_FOUND'
+  | 'AGENT_NAME_TAKEN'
+  | 'AGENT_VERSION_CONFLICT'
+  | 'AGENT_VERSION_NOT_FOUND'
+  | 'AGENT_UNAVAILABLE'
+  | 'AGENT_TOKEN_BUDGET_EXCEEDED'
+  | 'AGENT_CIRCUIT_OPEN'
+  | 'CONVERSATION_NOT_FOUND'
+  | 'CONVERSATION_ARCHIVED'
+  | 'CONVERSATION_BUSY'
+  | 'CONVERSATION_TOKEN_BUDGET_EXCEEDED'
+  | 'MESSAGE_DUPLICATE'
+  | 'LLM_NOT_CONFIGURED'
+  | 'LLM_MODEL_NOT_ALLOWED'
+  | 'LLM_MODEL_NOT_FOUND'
+  | 'LLM_CONTEXT_OVERFLOW'
+  | 'LLM_BUSY'
+  | 'LLM_UNAVAILABLE'
+  | 'LLM_TIMEOUT'
+  | 'LLM_REJECTED'
+  | 'LLM_RESPONSE_INVALID'
+  | 'TOKEN_RATE_LIMITED'
+  | 'QUOTA_EXCEEDED'
+  | 'PII_EGRESS_BLOCKED'
+  | 'TOOL_NOT_FOUND'
+  | 'TOOL_DISABLED'
   | 'NETWORK_ERROR'; // client-side only (see ClientErrorCode in errors.ts)

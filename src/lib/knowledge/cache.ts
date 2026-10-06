@@ -57,6 +57,8 @@ export function afterKnowledgeBaseDeleted(workspaceId: string, knowledgeBaseId: 
     invalidate(queryKeys.knowledgeBases(workspaceId)),
     invalidate(queryKeys.documents(workspaceId)),
     invalidate(queryKeys.ragScope(workspaceId)),
+    invalidate(queryKeys.agent(workspaceId)),
+    invalidate(queryKeys.conversation(workspaceId)),
   ]);
 }
 
@@ -68,6 +70,8 @@ export function afterGrantsChanged(workspaceId: string, knowledgeBaseId: string)
     invalidate(queryKeys.knowledgeBases(workspaceId)),
     invalidate(queryKeys.ragScope(workspaceId)),
     invalidate(queryKeys.documents(workspaceId)),
+    // Phase 4 §9.5: labels are re-checked on every read; messages may now be withheld.
+    invalidate(queryKeys.conversation(workspaceId)),
   ]);
 }
 
@@ -91,6 +95,8 @@ export function afterDocumentUpdated(workspaceId: string, document: VaultDocumen
     invalidate(queryKeys.documents(workspaceId)),
     invalidate(queryKeys.knowledgeBases(workspaceId)),
     invalidate(queryKeys.documentPiiReport(workspaceId, document.id)),
+    // A reclassification can withhold answers that quoted it (Phase 4 §9.5).
+    invalidate(queryKeys.conversation(workspaceId)),
   ]);
 }
 
@@ -107,7 +113,12 @@ export function afterDocumentGone(workspaceId: string, documentId: string): Prom
   queryClient.setQueriesData<Paginated<VaultDocument>>({ queryKey: queryKeys.documents(workspaceId) }, (page) =>
     page ? { ...page, items: page.items.filter((item) => item.id !== documentId) } : page,
   );
-  return Promise.all([invalidate(queryKeys.documents(workspaceId)), invalidate(queryKeys.knowledgeBases(workspaceId))]);
+  return Promise.all([
+    invalidate(queryKeys.documents(workspaceId)),
+    invalidate(queryKeys.knowledgeBases(workspaceId)),
+    // Answers that relied on it are withdrawn (SOURCE_DELETED), even from their owner (Phase 4 §4.7).
+    invalidate(queryKeys.conversation(workspaceId)),
+  ]);
 }
 
 /**
@@ -152,6 +163,11 @@ export function invalidateKnowledgeAccess(workspaceId: string): Promise<unknown>
     invalidate(queryKeys.documents(workspaceId)),
     invalidate(queryKeys.document(workspaceId)),
     invalidate(queryKeys.pii(workspaceId)),
+    // Phase 4: who sees which agent, and which messages are withheld, follow roles too.
+    invalidate(queryKeys.agents(workspaceId)),
+    invalidate(queryKeys.agent(workspaceId)),
+    invalidate(queryKeys.conversations(workspaceId)),
+    invalidate(queryKeys.conversation(workspaceId)),
   ]);
 }
 
