@@ -24,7 +24,7 @@ import { useKnowledgeAccess, useLayerGap } from '../shared/use-knowledge-access'
 import { UploadDialog } from '../upload/upload-dialog';
 import { findCachedKnowledgeBase, type KnowledgeBaseOutletContext } from './kb-context';
 
-/** A knowledge base: its header, Settings (§6.6) and Access (§6.7) tabs. */
+/** A knowledge base: its header, Settings (§5 "Knowledge bases") and Access (§5 "Access tab") tabs. */
 export function KnowledgeBaseLayout() {
   const workspace = useWorkspace();
   const can = useCan();
@@ -48,6 +48,8 @@ function Loaded({ knowledgeBaseId }: { knowledgeBaseId: string }) {
   const query = useQuery({
     ...knowledgeBaseQuery(workspace.id, knowledgeBaseId),
     enabled: valid,
+    // Fresh before a long-lived edit form opens (spec §8 P3-API-03); the list's copy shows meanwhile.
+    refetchOnMount: 'always',
     placeholderData: () => findCachedKnowledgeBase(workspace.id, knowledgeBaseId),
   });
   const knowledgeBase = query.data;

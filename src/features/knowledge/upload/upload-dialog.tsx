@@ -30,7 +30,7 @@ const TAGS_MAX = 20;
 type Phase = { kind: 'compose' } | { kind: 'progress'; batchId: string };
 
 /**
- * Upload documents (§6.2). The files live with the caller so files dropped on the
+ * Upload documents (§5 "Upload"). The files live with the caller so files dropped on the
  * page while the dialog is open join the list. Once sent, the dialog follows the
  * batch; closing it leaves the uploads running in the background.
  */
@@ -122,7 +122,7 @@ function ComposeForm({
     [knowledgeBases.list, access],
   );
 
-  // Choices the user made; until then, defaults follow the data (§6.2).
+  // Choices the user made; until then, defaults follow the data (§5 "Upload").
   const [pickedKb, setPickedKb] = useState<string | null>(null);
   const [pickedClassification, setPickedClassification] = useState<Classification | null>(null);
   const [title, setTitle] = useState('');
@@ -136,7 +136,7 @@ function ComposeForm({
     (uploadable.length === 1 ? uploadable[0] : undefined);
 
   const suggested = knowledgeBase ? defaultUploadClassification(knowledgeBase, access.permissions) : null;
-  // Follows the chosen base's default until the user picks one (§6.2).
+  // Follows the chosen base's default until the user picks one (§5 "Upload").
   const classification: Classification | null =
     pickedClassification && withinClearance(pickedClassification, access.clearance) ? pickedClassification : (suggested?.value ?? null);
 
@@ -202,7 +202,7 @@ function ComposeForm({
     );
   }
 
-  // §6.2: "If none: replace the dialog with …"
+  // §5 "Upload": "If none: replace the dialog with …"
   if (uploadable.length === 0) {
     return (
       <>
@@ -446,9 +446,11 @@ function ProgressView({
 
   const title = summary.active
     ? `Uploading ${pluralize(summary.total - summary.cancelled, 'file')}`
-    : summary.failed
-      ? 'Upload finished with problems'
-      : 'Upload complete';
+    : summary.unknown
+      ? 'Some uploads need checking'
+      : summary.failed
+        ? 'Upload finished with problems'
+        : 'Upload complete';
 
   return (
     <>
@@ -467,12 +469,27 @@ function ProgressView({
             <span className="text-ink-soft">
               <span className="font-medium text-ink tabular">{summary.done}</span> of {summary.total - summary.cancelled} uploaded
               {summary.failed ? <span className="text-danger-700"> · {summary.failed} failed</span> : null}
+              {summary.unknown ? <span className="text-warning-700"> · {summary.unknown} to check</span> : null}
               {summary.cancelled ? <span className="text-muted"> · {summary.cancelled} cancelled</span> : null}
             </span>
             <span className="font-mono text-xs text-muted tabular">{Math.round(summary.progress * 100)}%</span>
           </div>
           <ProgressBar value={summary.progress} tone={!summary.active && summary.failed && !summary.done ? 'danger' : 'brand'} className="h-1.5" />
         </div>
+        {summary.unknown && !summary.active ? (
+          <Callout
+            tone="warning"
+            title={`${pluralize(summary.unknown, 'file')} got no answer`}
+            action={
+              <Button size="xs" variant="secondary" onClick={() => uploadQueue.checkAll(workspace.id)}>
+                Check the vault
+              </Button>
+            }
+          >
+            The connection dropped or timed out after sending, so {summary.unknown === 1 ? 'it' : 'they'} may have been stored. Checking
+            looks for {summary.unknown === 1 ? 'it' : 'them'} by title; only what isn't found can be sent again.
+          </Callout>
+        ) : null}
         {newFiles > 0 ? (
           <Callout
             tone="info"

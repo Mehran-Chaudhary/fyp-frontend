@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fileExtension, filenameStem, fileTypeFromName, formatBytes, precheckFile, sumBytes } from './files';
+import { defaultUploadTitle, fileExtension, filenameStem, fileTypeFromName, formatBytes, precheckFile, sanitizeUploadFilename, sumBytes } from './files';
 
 describe('precheckFile', () => {
   it('refuses types the server refuses', () => {
@@ -56,5 +56,31 @@ describe('formatBytes', () => {
   it('adds 64-bit counts without losing precision', () => {
     expect(sumBytes(['9007199254740993', '1'])).toBe('9007199254740994');
     expect(sumBytes(['297', 'x', '3'])).toBe('300');
+  });
+});
+
+describe('sanitizeUploadFilename (as the server stores names)', () => {
+  it('drops the client path and replaces reserved characters (verified example)', () => {
+    expect(sanitizeUploadFilename('C:\\fakepath\\quarterly "draft".txt')).toBe('quarterly _draft_.txt');
+    expect(defaultUploadTitle('C:\\fakepath\\quarterly "draft".txt')).toBe('quarterly _draft_');
+  });
+
+  it('keeps UTF-8 names and strips leading dots', () => {
+    expect(sanitizeUploadFilename('رپورٹ.md')).toBe('رپورٹ.md');
+    expect(sanitizeUploadFilename('..hidden.txt')).toBe('hidden.txt');
+    expect(sanitizeUploadFilename('...')).toBe('document');
+  });
+
+  it('cuts long names to 200 characters, keeping the extension', () => {
+    const name = sanitizeUploadFilename(`${'a'.repeat(250)}.pdf`);
+    expect(name).toHaveLength(200);
+    expect(name.endsWith('.pdf')).toBe(true);
+  });
+});
+
+describe('formatBytes beyond safe integers', () => {
+  it('scales 64-bit counts without rounding errors', () => {
+    expect(formatBytes('9007199254740993')).toBe('8 PB');
+    expect(formatBytes('')).toBe('0 B');
   });
 });

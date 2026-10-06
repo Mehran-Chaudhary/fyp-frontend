@@ -9,10 +9,13 @@ University Islamabad). Delivery follows the backend team's five-phase plan
   Implementation notes, the acceptance-check status and known limitations are in
   [`docs/PHASE_1_IMPLEMENTATION_NOTES.md`](docs/PHASE_1_IMPLEMENTATION_NOTES.md).
 - **Phase 2: Workspace Administration & Access Control** (team, roles, invitations, API
-  keys, security settings) and **Phase 3: Knowledge, Document Vault & Privacy** (vault,
-  uploads, document detail, PII reports, knowledge bases and grants, retrieval) were built
-  against earlier handoffs and are kept working on the Phase 1 foundation. Their current
-  handoffs are re-checked when those phases come up for acceptance.
+  keys, security settings), built to handoff revision 3
+  ([notes](docs/PHASE_2_IMPLEMENTATION_NOTES.md)).
+- **Phase 3: Knowledge, Document Vault & Privacy** (knowledge bases and grants, uploads,
+  the vault, document detail and chunks, redaction reports, the privacy policy and its
+  preview, retrieval), built to handoff revision 1
+  ([`docs/PHASE_3_KNOWLEDGE_DOCUMENT_VAULT_PRIVACY.md`](docs/PHASE_3_KNOWLEDGE_DOCUMENT_VAULT_PRIVACY.md);
+  [notes](docs/PHASE_3_IMPLEMENTATION_NOTES.md)). All 23 operations are wired.
 
 ## Stack
 
@@ -89,10 +92,10 @@ src/
     rbac/         the anti-escalation rules (rank, "grant only what you hold"), mirrored from the server
     workspace/    invitation/API-key status, IP/CIDR matching (copied from the backend), email
                   masking, allowed domains, and what to refetch after each admin change (cache.ts)
-    knowledge/    the access model (clearance, levels, what each action needs), document status
-                  and polling, file checks, the XHR upload and the upload queue, downloads, PII
-                  placeholders, vault filters, bulk runs, knowledge-layer gaps, and what to
-                  refetch after each knowledge change (cache.ts)
+    knowledge/    the access model (clearance, levels, what each action needs), document status,
+                  bounded polling, file checks, the upload form and queue, downloads, PII
+                  placeholders and policy editing, vault filters, bulk runs, knowledge-layer
+                  gaps, and what to refetch after each knowledge change (cache.ts)
     validation/   password policy and slug rules mirrored from the backend, Zod schemas
     queries.ts    query keys and options; contextual identity (every workspace key starts with ['ws', id])
   components/     UI kit (ui/), brand, loading/error/empty states (feedback/)
@@ -102,10 +105,10 @@ src/
     shell/        app shell, navigation, home, reserved sections for later phases
     account/      profile, security (password, MFA, devices), privacy (export, erase)
     team/         members (+ drawer), invitations, roles and the role editor
-    settings/     general (profile, retention, chunking, leave, transfer, delete), security
-                  (MFA / verified-email requirements, allowed domains, IP allowlist), API keys
+    settings/     general, defaults, security, networks, API keys, danger zone
+    privacy/      Settings → Privacy: redaction policy editor, entity catalogue, analysis preview
     knowledge/    vault/ (table, toolbar, Ask, panels, bulk actions, drop zone), upload/ (dialog,
-                  activity, watcher), document/ (drawer: overview, chunks, PII report),
+                  activity, watcher), document/ (drawer: overview, chunks, redaction),
                   knowledge-bases/ (list, form, settings, access grants), search/ (playground),
                   shared/ (badges, file glyphs, masked text, access hooks)
     invitations/  the public invitation landing page the backend emails
@@ -182,25 +185,37 @@ src/
   expects; `useActionGate()` turns a missing permission into *hidden* and a low level on a
   knowledge base (or a server that can't do it yet) into *disabled, with the reason*.
   Classifications offered anywhere are only those within your clearance.
-- **Uploads don't go through `request()`.** `fetch` can't report upload progress, so
-  `lib/knowledge/upload.ts` uses XHR with the client's token handling. Files go through the
-  app's upload queue (`lib/knowledge/app-upload-queue.ts`): at most three at a time, held
-  when `x-ratelimit-remaining` reaches 0 (until `x-ratelimit-reset`), requeued after a 429's
-  `Retry-After`, and the waiting files are stopped by errors every file would hit (quota,
-  permission, the knowledge layer). Uploads carry on after the dialog closes; signing out
-  aborts them, and leaving the page while they run asks first.
-- **No push events: poll.** The vault's current page and an open document poll with
-  `pollInterval` (2 s, 5 s, 15 s as statuses age; none when nothing is processing).
-  `useSettleWatcher` refreshes stats, chunks and PII reports when a document finishes.
+- **Uploads go through the shared adapter.** `request()` takes a `FormData` body (no
+  Content-Type: the browser sets the boundary) and, with `onUploadProgress`, sends over
+  XMLHttpRequest so bytes can be shown, with the same token refresh, request ids and error
+  envelopes. Files go through the app's upload queue (`lib/knowledge/app-upload-queue.ts`):
+  at most two at a time, classification always sent, held when `x-ratelimit-remaining`
+  reaches 0, requeued after a 429's `Retry-After`, waiting files stopped by errors every file
+  would hit. **A lost answer is never resent:** the file becomes "outcome unknown" until
+  "Check the vault" finds it (counted as uploaded) or doesn't (send again is offered).
+- **No push events: bounded polling.** `lib/knowledge/polling.ts` polls a list or an open
+  document only while something shown is processing: 2 s for a minute, 5 s to five minutes,
+  15 s to 30 minutes, then "Still processing — refresh to check". It waits out a 429 and
+  backs off on outages. `useSettleWatcher` refreshes stats, detail, chunks and reports when
+  a document finishes; chunk and report keys carry the active index (and policy) version.
+- **Never resend after a lost answer.** Network errors, timeouts and 5xx on uploads,
+  deletes, reclassifications, grant changes, base edits and policy saves are "outcome
+  unknown": the screen re-reads (list, detail, policy) and lets the user decide.
+- **The privacy policy is versioned.** Saves send `expectedVersion` and only changed fields
+  (`lib/knowledge/pii-policy.ts`); a no-op save is impossible because every save bumps the
+  version. Changes that mask less need an explicit acknowledgement. A 409 shows what changed
+  on the server and offers to re-apply your edits on top.
 - **A missing knowledge layer is remembered for the session.** The first `503
   KNOWLEDGE_LAYER_NOT_CONFIGURED` is recorded (`lib/knowledge/layer.ts`, from the global error
   handler or the upload queue); uploads, reindexing, downloads or search are disabled
   according to the settings it names, and the banner offers "Check again".
-- **Document text stays in memory.** Retrieval runs as a mutation with `gcTime: 0`; revealed
-  PII is fetched outside the query cache and hidden after 60 s or when the tab is hidden; a
+- **Document text stays in memory.** Retrieval runs as a cancellable mutation with
+  `gcTime: 0`; analysed text and revealed values live in component state only, behind a
+  confirmation that the reveal is audited, hidden after 60 s or when the tab is hidden; a
   question handed from the vault's Ask box to Search goes through module memory, never the URL.
 - **No bulk endpoints.** Bulk reindex, reclassify and delete (and "reindex all" on a
   knowledge base) run the single calls one at a time, at most four per second
-  (`lib/knowledge/bulk.ts`), skip what you can't act on, and report per-row failures.
-- **For local work** the backend's `npm run start:standins` (Phase 3 spec §13) serves the
-  real API with in-memory stand-ins for object storage, Qdrant and the AI service.
+  (`lib/knowledge/bulk.ts`), pause for a 429's `Retry-After`, skip what you can't act on,
+  and report every document's outcome.
+- **Before starting the backend locally,** check its `.env`: it may point at shared cloud
+  services (database, object storage, vector store), and running it writes to them.

@@ -13,7 +13,7 @@ import { toCreateRequest } from './kb-form-model';
 import { kbFormErrors, useCreateKnowledgeBase } from './kb-mutations';
 import { KnowledgeBaseForm } from './knowledge-base-form';
 
-/** Create a knowledge base (§6.6, E61). */
+/** Create a knowledge base (§5 "Knowledge bases", P3-API-02). */
 export function NewKnowledgeBasePage() {
   const workspace = useWorkspace();
   const can = useCan();
@@ -67,7 +67,7 @@ function CreateForm() {
                   ? 'Only you can see it so far. Grant roles or people access next.'
                   : 'Everyone with document permissions can see it.',
             });
-            // A restricted base is invisible to everyone without a grant: go straight to Access (§6.6).
+            // A restricted base is invisible to everyone without a grant: go straight to Access (§5 "Knowledge bases").
             await navigate(`/w/${workspace.slug}/knowledge-bases/${created.id}${created.accessMode === 'RESTRICTED' ? '/access' : ''}`);
           } catch (error) {
             return kbFormErrors(error);

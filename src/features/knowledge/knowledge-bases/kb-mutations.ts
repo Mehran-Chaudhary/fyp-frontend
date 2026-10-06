@@ -1,6 +1,6 @@
 import { useMutation } from '@tanstack/react-query';
 import { knowledgeBasesApi } from '@/lib/api/endpoints';
-import { hasCode, isApiError } from '@/lib/api/errors';
+import { hasCode, isApiError, isOutcomeUnknown } from '@/lib/api/errors';
 import type {
   AccessLevel,
   CreateKnowledgeBaseRequest,
@@ -20,7 +20,7 @@ import { queryClient } from '@/lib/query-client';
 import { useWorkspace } from '@/features/workspaces/workspace-context';
 import type { KbFormErrors } from './kb-form-model';
 
-/** A refused create or edit, on the form's fields (§6.6, §8). */
+/** A refused create or edit, on the form's fields (§5 "Knowledge bases", §8). */
 export function kbFormErrors(error: unknown): KbFormErrors {
   if (!isApiError(error)) return { form: messageFor(error) };
   switch (error.code) {
@@ -44,7 +44,7 @@ export function kbFormErrors(error: unknown): KbFormErrors {
   }
 }
 
-/** E61 */
+/** P3-API-02 */
 export function useCreateKnowledgeBase() {
   const workspace = useWorkspace();
   return useMutation({
@@ -53,15 +53,15 @@ export function useCreateKnowledgeBase() {
   });
 }
 
-/** E63. Send only what changed. */
+/** P3-API-04. Send only what changed. */
 export function useUpdateKnowledgeBase(knowledgeBase: KnowledgeBase) {
   const workspace = useWorkspace();
   return useMutation({
     mutationFn: (body: UpdateKnowledgeBaseRequest) => knowledgeBasesApi.update(workspace.id, knowledgeBase.id, body),
     onSuccess: (updated) => void afterKnowledgeBaseUpdated(workspace.id, updated, knowledgeBase),
     onError: (error) => {
-      // Our copy of the base (and our level on it) is stale.
-      if (hasCode(error, 'KNOWLEDGE_BASE_ACCESS_DENIED', 'KNOWLEDGE_BASE_NOT_FOUND')) {
+      // Our copy of the base (and our level on it) is stale, or the answer was lost: re-read it.
+      if (hasCode(error, 'KNOWLEDGE_BASE_ACCESS_DENIED', 'KNOWLEDGE_BASE_NOT_FOUND') || isOutcomeUnknown(error)) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBaseDetail(workspace.id, knowledgeBase.id) });
         void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBases(workspace.id) });
       }
@@ -69,7 +69,7 @@ export function useUpdateKnowledgeBase(knowledgeBase: KnowledgeBase) {
   });
 }
 
-/** E64. The caller leaves the base's page first, then this drops what's cached. */
+/** P3-API-05. The caller leaves the base's page first, then this drops what's cached. */
 export function useDeleteKnowledgeBase() {
   const workspace = useWorkspace();
   return useMutation({
@@ -81,7 +81,7 @@ export function forgetKnowledgeBase(workspaceId: string, knowledgeBaseId: string
   return afterKnowledgeBaseDeleted(workspaceId, knowledgeBaseId);
 }
 
-/** E66: grant, or change the level of an existing grant (an upsert). */
+/** P3-API-07: grant, or change the level of an existing grant (an upsert). */
 export function useUpsertGrant(knowledgeBaseId: string) {
   const workspace = useWorkspace();
   return useMutation({
@@ -91,7 +91,7 @@ export function useUpsertGrant(knowledgeBaseId: string) {
   });
 }
 
-/** E67 */
+/** P3-API-08 */
 export function useRevokeGrant(knowledgeBaseId: string) {
   const workspace = useWorkspace();
   return useMutation({

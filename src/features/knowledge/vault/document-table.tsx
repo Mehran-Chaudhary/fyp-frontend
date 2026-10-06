@@ -27,7 +27,9 @@ import { Table, TableMessage, TBody, TD, TH, THead, TR } from '@/components/ui/t
 import { Tooltip } from '@/components/ui/tooltip';
 import type { KnowledgeBase, VaultDocument } from '@/lib/api/types';
 import { formatBytes } from '@/lib/knowledge/files';
+import { isSlow } from '@/lib/knowledge/polling';
 import { isInProgress, retryCanHelp } from '@/lib/knowledge/status';
+import { useCoarseNow } from '@/lib/hooks';
 import { cn, formatDate } from '@/lib/utils';
 import { useWorkspace } from '@/features/workspaces/workspace-context';
 import { ClassificationBadge, DocumentStatusCell } from '../shared/badges';
@@ -38,7 +40,7 @@ import { useActionGate } from '../shared/use-action-gate';
 const COLUMNS = 8;
 
 export interface DocumentRowActions {
-  onOpen: (document: VaultDocument, tab?: 'chunks' | 'pii') => void;
+  onOpen: (document: VaultDocument, tab?: 'chunks' | 'privacy') => void;
   onDelete: (document: VaultDocument) => void;
   onReclassify: (document: VaultDocument) => void;
   onReindex: (document: VaultDocument) => void;
@@ -64,9 +66,11 @@ interface DocumentTableProps extends DocumentRowActions {
   empty: ReactNode;
 }
 
-/** The vault's table (§6.1). A click selects a row for the side panels; the title opens it. */
+/** The vault's table (§5 "Document Vault"). A click selects a row for the side panels; the title opens it. */
 export function DocumentTable(props: DocumentTableProps) {
   const { items, loading, error, stale, selectable, selection, onSelectionChange } = props;
+  // For "taking longer than usual" (spec §9.3): a 30-second clock is plenty for a 10-minute threshold.
+  const now = useCoarseNow();
   const allSelected = items.length > 0 && items.every((document) => selection.has(document.id));
   const someSelected = !allSelected && items.some((document) => selection.has(document.id));
 
@@ -91,7 +95,7 @@ export function DocumentTable(props: DocumentTableProps) {
           <TH className="hidden sm:table-cell">Classification</TH>
           <TH className="hidden text-right md:table-cell">Size</TH>
           <TH className="hidden text-right 2xl:table-cell">Chunks</TH>
-          <TH>Status</TH>
+          <TH className="hidden sm:table-cell">Status</TH>
           <TH className="w-px">
             <span className="sr-only">Actions</span>
           </TH>
@@ -107,7 +111,7 @@ export function DocumentTable(props: DocumentTableProps) {
         ) : items.length === 0 ? (
           <TableMessage colSpan={COLUMNS}>{props.empty}</TableMessage>
         ) : (
-          items.map((document) => <DocumentRow key={document.id} document={document} {...props} />)
+          items.map((document) => <DocumentRow key={document.id} document={document} slow={isSlow(document, now)} {...props} />)
         )}
       </TBody>
     </Table>
@@ -122,8 +126,9 @@ function DocumentRow({
   selectable,
   selection,
   onSelectionChange,
+  slow,
   ...actions
-}: DocumentTableProps & { document: VaultDocument }) {
+}: DocumentTableProps & { document: VaultDocument; slow: boolean }) {
   const workspace = useWorkspace();
   const location = useLocation();
   const knowledgeBase = knowledgeBases.get(document.knowledgeBaseId);
@@ -188,6 +193,10 @@ function DocumentRow({
               {differentName ? <span className="hidden min-w-0 truncate 2xl:inline">{document.originalFilename} ·</span> : null}
               <span className="shrink-0 whitespace-nowrap">Added {formatDate(document.createdAt)}</span>
             </p>
+            {/* Narrow screens: the status sits under the title instead of in its own column. */}
+            <div className="mt-1.5 sm:hidden">
+              <DocumentStatusCell document={document} slow={slow} />
+            </div>
           </div>
         </div>
       </TD>
@@ -201,8 +210,8 @@ function DocumentRow({
       <TD className="hidden text-right font-mono text-[12.5px] tabular 2xl:table-cell">
         {document.chunkCount === 0 && !document.isSearchable ? <span className="text-faint">—</span> : document.chunkCount.toLocaleString()}
       </TD>
-      <TD>
-        <DocumentStatusCell document={document} />
+      <TD className="hidden sm:table-cell">
+        <DocumentStatusCell document={document} slow={slow} />
       </TD>
       <TD className="text-right whitespace-nowrap" onClick={(event) => event.stopPropagation()}>
         <RowActions document={document} knowledgeBase={knowledgeBase} {...actions} />
@@ -238,13 +247,13 @@ function RowActions({
   return (
     <div className="flex items-center justify-end gap-0.5">
       <Tooltip content="View details">
-        <Button variant="ghost" size="icon-sm" className="text-faint hover:text-ink" onClick={() => onOpen(document)} aria-label={`View ${document.title}`}>
+        <Button variant="ghost" size="icon-sm" className="hidden text-faint hover:text-ink sm:inline-flex" onClick={() => onOpen(document)} aria-label={`View ${document.title}`}>
           <Eye />
         </Button>
       </Tooltip>
       {del.visible ? (
         <Tooltip content={del.reason ?? 'Delete'}>
-          <span tabIndex={del.reason ? 0 : -1} className="inline-flex rounded-lg">
+          <span tabIndex={del.reason ? 0 : -1} className="hidden rounded-lg sm:inline-flex">
             <Button
               variant="ghost"
               size="icon-sm"
@@ -274,7 +283,7 @@ function RowActions({
             Chunks
           </DropdownMenuItem>
           {pii.visible ? (
-            <MenuAction icon={<ScanEye />} label="PII report" reason={pii.reason} onSelect={() => onOpen(document, 'pii')} />
+            <MenuAction icon={<ScanEye />} label="Redaction report" reason={pii.reason} onSelect={() => onOpen(document, 'privacy')} />
           ) : null}
           {download.visible || showReindex || reclassify.visible ? <DropdownMenuSeparator /> : null}
           {download.visible ? (
@@ -364,7 +373,7 @@ function SkeletonRow() {
       <TD className="hidden 2xl:table-cell">
         <Skeleton className="ml-auto h-3 w-8" />
       </TD>
-      <TD>
+      <TD className="hidden sm:table-cell">
         <Skeleton className="h-5 w-16 rounded-md" />
       </TD>
       <TD />

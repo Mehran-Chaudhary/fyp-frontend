@@ -3,7 +3,7 @@ import { useEffect, useEffectEvent, useState } from 'react';
 const carriesFiles = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes('Files');
 
 /**
- * Files dragged anywhere over the window (§6.2: "files dropped on the drop zone or
+ * Files dragged anywhere over the window (§5 "Upload": "files dropped on the drop zone or
  * the page"). Returns whether a drag is in progress, for the overlay.
  */
 export function usePageFileDrop(enabled: boolean, onFiles: (files: File[]) => void): boolean {

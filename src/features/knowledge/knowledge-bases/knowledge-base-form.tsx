@@ -45,7 +45,7 @@ interface KnowledgeBaseFormProps {
   onDirtyChange?: (dirty: boolean) => void;
 }
 
-/** Create and edit a knowledge base (§6.6). */
+/** Create and edit a knowledge base (§5 "Knowledge bases"). */
 export function KnowledgeBaseForm({
   knowledgeBase,
   readOnly,
@@ -107,7 +107,7 @@ export function KnowledgeBaseForm({
   return (
     <form
       noValidate
-      className="grid gap-6"
+      className="grid grid-cols-1 gap-6"
       onSubmit={(event) => {
         event.preventDefault();
         if (!readOnly) void submit();
@@ -121,7 +121,7 @@ export function KnowledgeBaseForm({
 
       <Card>
         <CardHeader icon={<Boxes />} title="Knowledge base" description="What it holds, in a name people will recognise." />
-        <CardBody className="grid gap-5">
+        <CardBody className="grid grid-cols-1 gap-5">
           <Field label="Name" error={errors.name}>
             <Input
               value={values.name}
@@ -155,7 +155,7 @@ export function KnowledgeBaseForm({
           title="Access"
           description="Who can see this knowledge base, and how new documents are classified by default."
         />
-        <CardBody className="grid gap-5">
+        <CardBody className="grid grid-cols-1 gap-5">
           <RadioGroup
             aria-label="Access"
             value={values.accessMode}
@@ -219,14 +219,15 @@ export function KnowledgeBaseForm({
             can('workspace:read') ? (
               <Button asChild variant="ghost" size="xs">
                 <Link to={`/w/${workspace.slug}/settings/defaults`}>
-                  Inherited from workspace settings
+                  <span className="hidden sm:inline">Inherited from workspace settings</span>
+                  <span className="sm:hidden">Workspace defaults</span>
                   <ArrowUpRight />
                 </Link>
               </Button>
             ) : null
           }
         />
-        <CardBody className="grid gap-5 sm:grid-cols-2">
+        <CardBody className="grid grid-cols-1 gap-5 sm:grid-cols-2">
           <ChunkField
             label="Chunk size"
             range={`${CHUNK_SIZE_MIN}–${CHUNK_SIZE_MAX} tokens`}

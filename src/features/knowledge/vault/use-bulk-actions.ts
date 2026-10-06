@@ -22,13 +22,16 @@ const VERBS: Readonly<Record<BulkKind, { running: string; done: string; noun: st
 };
 
 /** Errors that would fail every remaining call too: stop instead of hammering the server. */
-const stopOn = (error: unknown) =>
-  hasCode(error, 'RATE_LIMIT_EXCEEDED', 'KNOWLEDGE_LAYER_NOT_CONFIGURED', 'PERMISSION_DENIED', 'NETWORK_ERROR');
+const stopOn = (error: unknown) => hasCode(error, 'KNOWLEDGE_LAYER_NOT_CONFIGURED', 'PERMISSION_DENIED', 'NETWORK_ERROR');
+
+/** A rate limit pauses the run for the server's Retry-After, then the same document is tried again. */
+const waitFor = (error: unknown) => (hasCode(error, 'RATE_LIMIT_EXCEEDED') ? (error.retryAfterSeconds ?? 60) * 1000 : null);
 
 /**
- * Bulk actions over the selected rows (§6.1). There are no bulk endpoints: the
- * single calls run one at a time at most four per second, rows the user can't act
- * on are skipped, and failures are reported per row at the end.
+ * Bulk actions over the selected rows (§5 "Document Vault"). There are no bulk endpoints
+ * (P3-G08): the single calls run one at a time at most four per second, a rate limit
+ * pauses the run, rows the user can't act on are skipped, and failures are reported
+ * per row at the end. Deletion and reclassification are never optimistic.
  */
 export function useBulkActions(knowledgeBases: ReadonlyMap<string, KnowledgeBase>) {
   const workspace = useWorkspace();
@@ -79,7 +82,15 @@ export function useBulkActions(knowledgeBases: ReadonlyMap<string, KnowledgeBase
     const outcome = await runSequentially(
       targets,
       async (document) => {
-        if (kind === 'reindex') return documentsApi.reindex(workspace.id, document.id);
+        if (kind === 'reindex') {
+          try {
+            return await documentsApi.reindex(workspace.id, document.id);
+          } catch (error) {
+            // Started processing meanwhile: it'll be done anyway (409 DOCUMENT_PROCESSING).
+            if (hasCode(error, 'DOCUMENT_PROCESSING')) return;
+            throw error;
+          }
+        }
         if (kind === 'reclassify') return documentsApi.update(workspace.id, document.id, { classification: options.classification });
         try {
           return await documentsApi.remove(workspace.id, document.id);
@@ -91,6 +102,10 @@ export function useBulkActions(knowledgeBases: ReadonlyMap<string, KnowledgeBase
       },
       {
         stopOn,
+        waitFor,
+        onWait: (until) => {
+          if (until) toast.loading(`Paused by the rate limit · resuming in ${Math.max(1, Math.ceil((until - Date.now()) / 1000))} s…`, { id: toastId });
+        },
         onProgress: (done, total) => {
           if (done < total) toast.loading(`${verbs.running} ${done + 1} of ${total}…`, { id: toastId });
         },

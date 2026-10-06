@@ -18,28 +18,40 @@ import { Segmented } from '@/components/ui/segmented';
 import { Tooltip } from '@/components/ui/tooltip';
 import type { Classification, KnowledgeBase } from '@/lib/api/types';
 import { readableClassifications } from '@/lib/knowledge/access';
-import { SORT_PRESETS, sortPresetOf, STATUS_FILTER_LABELS, type StatusFilter, type VaultFilters } from '@/lib/knowledge/filters';
+import {
+  IN_PROGRESS_GROUPS,
+  isInProgressFilter,
+  SORT_PRESETS,
+  sortPresetOf,
+  toggleStatusGroup,
+  type VaultFilters,
+} from '@/lib/knowledge/filters';
+import { STATUS_GROUP_LABELS, STATUS_GROUP_ORDER, type StatusGroup } from '@/lib/knowledge/status';
 import { cn } from '@/lib/utils';
 import { KnowledgeBaseDot } from '../shared/kb-identity';
 import { CLASSIFICATION_META } from '../shared/meta';
 
 export type SearchMode = 'titles' | 'ask';
 
-const STATUS_OPTIONS: ReadonlyArray<{ value: StatusFilter; dot: string }> = [
-  { value: 'all', dot: 'bg-transparent' },
-  { value: 'indexed', dot: 'bg-success-500' },
-  { value: 'indexing', dot: 'bg-info-500' },
-  { value: 'pending', dot: 'bg-faint' },
-  { value: 'failed', dot: 'bg-danger-500' },
-];
+const STATUS_DOT: Readonly<Record<StatusGroup, string>> = {
+  queued: 'bg-faint',
+  processing: 'bg-info-500',
+  ready: 'bg-success-500',
+  failed: 'bg-danger-500',
+};
 
-const statusLabel = (status: StatusFilter) => STATUS_FILTER_LABELS[status];
+/** "In progress", "Queued, Failed", or "Any". */
+function statusFilterLabel(groups: readonly StatusGroup[]): string {
+  if (groups.length === 0) return 'Any';
+  if (isInProgressFilter(groups)) return 'In progress';
+  return groups.map((group) => STATUS_GROUP_LABELS[group]).join(', ');
+}
 
 interface ToolbarProps {
   filters: VaultFilters;
   onUpdate: (patch: Partial<VaultFilters>) => void;
   knowledgeBases: readonly KnowledgeBase[];
-  /** Classifications the user can read; others would always return nothing (§6.1). */
+  /** Classifications the user can read; others would always return nothing (§5 "Document Vault"). */
   clearance: Classification;
   mode: SearchMode;
   onModeChange: (mode: SearchMode) => void;
@@ -47,7 +59,7 @@ interface ToolbarProps {
   ask: null | { disabledReason: string | null; pending: boolean; onAsk: (query: string) => void };
 }
 
-/** The vault's toolbar (§6.1): search (titles, or ask), filters and sorting. */
+/** The vault's toolbar (§5 "Document Vault"): search (titles, or ask), filters and sorting. */
 export function VaultToolbar({ filters, onUpdate, knowledgeBases, clearance, mode, onModeChange, ask }: ToolbarProps) {
   return (
     <div className="flex flex-col gap-2.5 p-3 sm:px-4 lg:flex-row lg:items-center">
@@ -197,7 +209,7 @@ function FilterMenu({
   knowledgeBases: readonly KnowledgeBase[];
   clearance: Classification;
 }) {
-  const active = (filters.kb ? 1 : 0) + (filters.status !== 'all' ? 1 : 0) + (filters.classification ? 1 : 0);
+  const active = (filters.kb ? 1 : 0) + (filters.status.length ? 1 : 0) + (filters.classification ? 1 : 0);
   const currentKb = knowledgeBases.find((knowledgeBase) => knowledgeBase.id === filters.kb);
 
   return (
@@ -235,12 +247,30 @@ function FilterMenu({
           </DropdownMenuSubContent>
         </DropdownMenuSub>
         <DropdownMenuSub>
-          <DropdownMenuSubTrigger hint={filters.status === 'all' ? 'Any' : statusLabel(filters.status)}>Status</DropdownMenuSubTrigger>
-          <DropdownMenuSubContent>
-            {STATUS_OPTIONS.map((option) => (
-              <DropdownMenuCheckItem key={option.value} checked={filters.status === option.value} onSelect={() => onUpdate({ status: option.value })}>
-                <span className={cn('size-2 rounded-full', option.dot)} aria-hidden />
-                {statusLabel(option.value)}
+          <DropdownMenuSubTrigger hint={statusFilterLabel(filters.status)}>Status</DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="w-56">
+            <DropdownMenuCheckItem checked={filters.status.length === 0} onSelect={() => onUpdate({ status: [] })}>
+              Any status
+            </DropdownMenuCheckItem>
+            <DropdownMenuCheckItem checked={isInProgressFilter(filters.status)} onSelect={() => onUpdate({ status: [...IN_PROGRESS_GROUPS] })}>
+              In progress
+            </DropdownMenuCheckItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel>Choose any</DropdownMenuLabel>
+            {STATUS_GROUP_ORDER.map((group) => (
+              <DropdownMenuCheckItem
+                key={group}
+                role="menuitemcheckbox"
+                aria-checked={filters.status.includes(group)}
+                checked={filters.status.includes(group)}
+                // A multi-select: the menu stays open while ticking several.
+                onSelect={(event) => {
+                  event.preventDefault();
+                  onUpdate({ status: toggleStatusGroup(filters.status, group) });
+                }}
+              >
+                <span className={cn('size-2 rounded-full', STATUS_DOT[group])} aria-hidden />
+                {STATUS_GROUP_LABELS[group]}
               </DropdownMenuCheckItem>
             ))}
           </DropdownMenuSubContent>
@@ -269,7 +299,7 @@ function FilterMenu({
         {active ? (
           <>
             <DropdownMenuSeparator />
-            <DropdownMenuCheckItem onSelect={() => onUpdate({ kb: null, status: 'all', classification: null })}>
+            <DropdownMenuCheckItem onSelect={() => onUpdate({ kb: null, status: [], classification: null })}>
               <X />
               Clear filters
             </DropdownMenuCheckItem>
@@ -329,7 +359,7 @@ export function ActiveFilters({
       clear: { kb: null },
     });
   }
-  if (filters.status !== 'all') chips.push({ key: 'status', label: `Status: ${statusLabel(filters.status)}`, clear: { status: 'all' } });
+  if (filters.status.length) chips.push({ key: 'status', label: `Status: ${statusFilterLabel(filters.status)}`, clear: { status: [] } });
   if (filters.classification) {
     chips.push({
       key: 'classification',
@@ -361,7 +391,7 @@ export function ActiveFilters({
         </span>
       ))}
       {chips.length > 1 ? (
-        <Button variant="link" size="xs" className="ml-1 text-xs" onClick={() => onUpdate({ kb: null, status: 'all', classification: null, q: '' })}>
+        <Button variant="link" size="xs" className="ml-1 text-xs" onClick={() => onUpdate({ kb: null, status: [], classification: null, q: '' })}>
           Clear all
         </Button>
       ) : null}

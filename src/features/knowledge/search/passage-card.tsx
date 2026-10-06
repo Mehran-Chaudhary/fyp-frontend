@@ -10,9 +10,9 @@ import { Highlighted } from '../shared/highlight';
 import { KnowledgeBaseDot } from '../shared/kb-identity';
 
 /**
- * One retrieved passage (§6.8). Scores are comparable only within one response, so
+ * One retrieved passage (§5 "Retrieval playground"). Scores are comparable only within one response, so
  * they're drawn as a bar relative to the top result, with the raw number on hover;
- * never as a percentage or "match quality" (§4.4).
+ * never as a percentage or "match quality" (§4.7).
  */
 export function PassageCard({
   passage,
@@ -20,6 +20,7 @@ export function PassageCard({
   terms,
   compact,
   keepSearch,
+  linkToDocument = true,
 }: {
   passage: RetrievedChunk;
   topScore: number;
@@ -27,6 +28,8 @@ export function PassageCard({
   compact?: boolean;
   /** Keep the current query string on the document link (the vault's filters). */
   keepSearch?: boolean;
+  /** Link the title to the document: only with document:read (spec §5 "Retrieval playground"). */
+  linkToDocument?: boolean;
 }) {
   const workspace = useWorkspace();
   const location = useLocation();
@@ -50,13 +53,17 @@ export function PassageCard({
       </span>
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <Link
-            to={{ pathname: `/w/${workspace.slug}/documents/${passage.documentId}`, search: keepSearch ? location.search : '' }}
-            preventScrollReset={keepSearch}
-            className="min-w-0 truncate text-[13.5px] font-medium text-ink hover:text-brand-700 hover:underline hover:decoration-brand-200 hover:underline-offset-4"
-          >
-            {passage.documentTitle}
-          </Link>
+          {linkToDocument ? (
+            <Link
+              to={{ pathname: `/w/${workspace.slug}/documents/${passage.documentId}`, search: keepSearch ? location.search : '' }}
+              preventScrollReset={keepSearch}
+              className="min-w-0 truncate text-[13.5px] font-medium text-ink hover:text-brand-700 hover:underline hover:decoration-brand-200 hover:underline-offset-4"
+            >
+              {passage.documentTitle}
+            </Link>
+          ) : (
+            <span className="min-w-0 truncate text-[13.5px] font-medium text-ink">{passage.documentTitle}</span>
+          )}
           <ClassificationBadge classification={passage.classification} />
         </div>
         <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-muted">
@@ -65,7 +72,7 @@ export function PassageCard({
             {passage.knowledgeBaseName}
           </span>
           <span aria-hidden>·</span>
-          <span>Chunk {passage.chunkIndex + 1}</span>
+          <span>Chunk #{passage.chunkIndex}</span>
           {pages ? (
             <>
               <span aria-hidden>·</span>

@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_VAULT_FILTERS, hasActiveFilters, readVaultFilters, sortPresetOf, toDocumentListParams, writeVaultFilters } from './filters';
+import {
+  DEFAULT_VAULT_FILTERS,
+  hasActiveFilters,
+  isInProgressFilter,
+  readVaultFilters,
+  sortPresetOf,
+  toDocumentListParams,
+  toggleStatusGroup,
+  writeVaultFilters,
+} from './filters';
 
 const params = (query: string) => new URLSearchParams(query);
 
@@ -9,9 +18,9 @@ describe('vault filters in the URL', () => {
   });
 
   it('reads every filter and ignores invalid values', () => {
-    expect(readVaultFilters(params('kb=abc&status=indexing&classification=confidential&q=policy&sort=title&page=3'))).toEqual({
+    expect(readVaultFilters(params('kb=abc&status=processing,failed&classification=confidential&q=policy&sort=title&page=3'))).toEqual({
       kb: 'abc',
-      status: 'indexing',
+      status: ['processing', 'failed'],
       classification: 'CONFIDENTIAL',
       q: 'policy',
       sort: 'title',
@@ -21,8 +30,19 @@ describe('vault filters in the URL', () => {
     expect(readVaultFilters(params('status=done&classification=top-secret&sort=rank&page=-2'))).toEqual(DEFAULT_VAULT_FILTERS);
   });
 
+  it('still understands links from before the status groups', () => {
+    expect(readVaultFilters(params('status=indexing')).status).toEqual(['processing']);
+    expect(readVaultFilters(params('status=pending')).status).toEqual(['queued']);
+    expect(readVaultFilters(params('status=indexed')).status).toEqual(['ready']);
+  });
+
+  it('keeps groups in lifecycle order; all four means any status', () => {
+    expect(readVaultFilters(params('status=failed,queued,failed')).status).toEqual(['queued', 'failed']);
+    expect(readVaultFilters(params('status=queued,processing,ready,failed')).status).toEqual([]);
+  });
+
   it('goes back to page 1 on any change but the page', () => {
-    const next = writeVaultFilters(params('page=4&q=leave'), { status: 'failed' });
+    const next = writeVaultFilters(params('page=4&q=leave'), { status: ['failed'] });
     expect(next.get('page')).toBeNull();
     expect(next.get('status')).toBe('failed');
     expect(next.get('q')).toBe('leave');
@@ -39,10 +59,19 @@ describe('vault filters in the URL', () => {
   });
 });
 
+describe('status multi-select', () => {
+  it('toggles groups and recognises "In progress"', () => {
+    expect(toggleStatusGroup([], 'processing')).toEqual(['processing']);
+    expect(toggleStatusGroup(['processing'], 'queued')).toEqual(['queued', 'processing']);
+    expect(isInProgressFilter(['queued', 'processing'])).toBe(true);
+    expect(toggleStatusGroup(['queued', 'processing'], 'processing')).toEqual(['queued']);
+  });
+});
+
 describe('toDocumentListParams', () => {
-  it('sends "Indexing" as three statuses in one parameter (BF-18)', () => {
-    const filters = readVaultFilters(params('status=indexing'));
-    expect(toDocumentListParams(filters, null).status).toEqual(['PARSING', 'CHUNKING', 'EMBEDDING']);
+  it('sends "In progress" as the four in-flight statuses in one parameter (spec §5)', () => {
+    const filters = readVaultFilters(params('status=queued,processing'));
+    expect(toDocumentListParams(filters, null).status).toEqual(['UPLOADED', 'PARSING', 'CHUNKING', 'EMBEDDING']);
   });
 
   it('only sends a knowledge-base filter that is a valid id', () => {
@@ -62,5 +91,6 @@ describe('toDocumentListParams', () => {
   it('knows when filters are active', () => {
     expect(hasActiveFilters(DEFAULT_VAULT_FILTERS)).toBe(false);
     expect(hasActiveFilters(readVaultFilters(params('classification=public')))).toBe(true);
+    expect(hasActiveFilters(readVaultFilters(params('status=failed')))).toBe(true);
   });
 });

@@ -115,10 +115,11 @@ export const SECTIONS: Record<SectionKey, SectionDefinition> = {
     label: 'Settings',
     icon: Settings,
     // Each settings tab has its own read permission (Phase 2 spec §3); any one reveals the section.
-    anyOf: ['workspace:read', 'security:read', 'apikey:read'],
+    anyOf: ['workspace:read', 'security:read', 'apikey:read', 'pii:policy:read'],
     phase: 2,
     group: 'govern',
-    summary: 'Workspace profile, processing defaults and security policy: required two-step verification, IP allowlists and API keys.',
+    summary:
+      'Workspace profile, processing defaults, security policy and privacy: required two-step verification, IP allowlists, API keys and the redaction policy.',
     bullets: [
       'Name, description, chunking defaults and audit retention',
       'Require two-step verification or a verified email for every member',
@@ -139,6 +140,7 @@ export const SUBSECTION_LABELS: Record<string, string> = {
   security: 'Security',
   networks: 'Networks',
   'api-keys': 'API keys',
+  privacy: 'Privacy',
   danger: 'Danger zone',
 };
 

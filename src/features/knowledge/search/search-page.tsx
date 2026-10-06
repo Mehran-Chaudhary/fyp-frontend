@@ -7,11 +7,13 @@ import {
   Gauge,
   Library,
   MessageSquareText,
+  RefreshCw,
   Search,
   SearchX,
+  ServerCrash,
   Timer,
 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { NoAccessState } from '@/components/feedback/no-access';
 import { EmptyState, PageHeader, RequestReference } from '@/components/feedback/states';
@@ -24,28 +26,32 @@ import { Input, Textarea } from '@/components/ui/input';
 import { Kbd, Skeleton } from '@/components/ui/misc';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Segmented } from '@/components/ui/segmented';
-import { Switch } from '@/components/ui/switch';
+import { Tooltip } from '@/components/ui/tooltip';
 import { isApiError } from '@/lib/api/errors';
-import type { RetrievalMode, RetrievalQuery, RetrievalResponse } from '@/lib/api/types';
+import type { AccessScope, RetrievalMode, RetrievalQuery, RetrievalResponse } from '@/lib/api/types';
 import { useCountdown, useDocumentTitle, useNow } from '@/lib/hooks';
 import { queryKeys, ragScopeQuery } from '@/lib/queries';
 import { queryClient } from '@/lib/query-client';
-import { cn, pluralize } from '@/lib/utils';
+import { cn, pluralize, timestamp } from '@/lib/utils';
 import { useCan, useWorkspace } from '@/features/workspaces/workspace-context';
 import { KnowledgeBaseDot } from '../shared/kb-identity';
 import { classificationLabel, queryTerms } from '../shared/meta';
 import { KnowledgeLayerBanner } from '../shared/states';
-import { useLayerGap } from '../shared/use-knowledge-access';
+import { useKnowledgeBases, useLayerGap } from '../shared/use-knowledge-access';
 import { clearHandedOffQuery, peekHandedOffQuery } from './handoff';
 import { AccessScopePanel } from './access-scope-panel';
 import { PassageCard } from './passage-card';
 import { describeRetrievalError, useRetrieval, type RetrievalProblem } from './use-retrieval';
 
+/** The deployment default (RAG_MAX_QUERY_LENGTH), after whitespace collapses. The server has the final word. */
 const QUERY_MAX = 2000;
+/** topK is accepted up to 200 and capped by the deployment (50 by default). */
 const TOP_K_MAX = 50;
 const KB_FILTER_MAX = 50;
 
-/** The retrieval playground (Phase 3 spec §6.8). Also where the vault's "Ask" continues. */
+type RerankChoice = 'default' | 'on' | 'off';
+
+/** The retrieval playground (Phase 3 spec §5 "Retrieval playground"). Also where the vault's "Ask" continues. */
 export function SearchPage() {
   const workspace = useWorkspace();
   const can = useCan();
@@ -70,13 +76,14 @@ function Playground() {
   const retrieval = useRetrieval();
   const [handoff] = useState(() => peekHandedOffQuery(workspace.id));
 
+  // The question stays out of the URL (spec §9.2): questions can be sensitive.
   const [question, setQuestion] = useState(handoff?.query ?? '');
   const [knowledgeBaseIds, setKnowledgeBaseIds] = useState<string[]>(handoff?.knowledgeBaseIds ?? []);
   const [topK, setTopK] = useState('8');
   const [mode, setMode] = useState<RetrievalMode>('hybrid');
   const [minScore, setMinScore] = useState('');
-  const [rerank, setRerank] = useState(false);
-  const [asked, setAsked] = useState<{ query: string; startedAt: number } | null>(null);
+  const [rerank, setRerank] = useState<RerankChoice>('default');
+  const [asked, setAsked] = useState<{ body: RetrievalQuery; startedAt: number } | null>(null);
   const [problem, setProblem] = useState<RetrievalProblem | null>(null);
   const [queryError, setQueryError] = useState<string | null>(null);
   const [blockedUntil, setBlockedUntil] = useState<number | null>(null);
@@ -92,7 +99,7 @@ function Playground() {
   const run = (body: RetrievalQuery) => {
     setProblem(null);
     setQueryError(null);
-    setAsked({ query: body.query, startedAt: Date.now() });
+    setAsked({ body, startedAt: timestamp() });
     retrieval.mutate(body, {
       onError: (error) => {
         const described = describeRetrievalError(error);
@@ -100,10 +107,11 @@ function Playground() {
         if (described.queryError) setQueryError(described.queryError);
         if (described.retryAt) setBlockedUntil(described.retryAt);
         if (described.goneKnowledgeBaseIds?.length) {
-          // §6.8: drop the bases that are gone, and refresh what you can reach.
+          // Drop the bases that are gone, and refresh what you can reach.
           const gone = new Set(described.goneKnowledgeBaseIds);
           setKnowledgeBaseIds((current) => current.filter((id) => !gone.has(id)));
           void queryClient.invalidateQueries({ queryKey: queryKeys.ragScope(workspace.id) });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBases(workspace.id) });
         }
       },
     });
@@ -115,7 +123,7 @@ function Playground() {
       return;
     }
     if (query.length > QUERY_MAX) {
-      setQueryError(`Use no more than ${QUERY_MAX} characters.`);
+      setQueryError(`Use no more than ${QUERY_MAX.toLocaleString()} characters.`);
       return;
     }
     if (!topKValid || !minScoreValid || retrieval.isPending || blockedFor > 0 || searchBlocked) return;
@@ -125,29 +133,32 @@ function Playground() {
       topK: topKValue,
       mode,
       ...(mode === 'dense' && minScoreValue !== undefined ? { minScore: minScoreValue } : {}),
-      ...(rerank ? { rerank: true } : {}),
+      ...(rerank === 'default' ? {} : { rerank: rerank === 'on' }),
     });
   };
 
-  // A question handed over from the vault's "Ask" runs once, straight away.
-  const handedOff = useRef(false);
-  useEffect(() => {
-    if (!handoff || handedOff.current) return;
-    handedOff.current = true;
+  // A question handed over from the vault's "Ask" runs once, straight away. It is
+  // scheduled rather than run inline so a remount (StrictMode's rehearsal) cancels
+  // the first attempt instead of the search.
+  const runHandoff = useEffectEvent(() => {
+    if (!handoff) return;
     clearHandedOffQuery();
-    retrieval.mutate(
-      { query: handoff.query, ...(handoff.knowledgeBaseIds.length ? { knowledgeBaseIds: handoff.knowledgeBaseIds } : {}), topK: 8 },
-      {
-        onError: (error) => setProblem(describeRetrievalError(error)),
-      },
-    );
-  }, [handoff, retrieval]);
+    run({
+      query: handoff.query,
+      ...(handoff.knowledgeBaseIds.length ? { knowledgeBaseIds: handoff.knowledgeBaseIds } : {}),
+      topK: 8,
+    });
+  });
+  useEffect(() => {
+    if (!handoff) return;
+    const timer = window.setTimeout(runHandoff, 0);
+    return () => window.clearTimeout(timer);
+  }, [handoff]);
 
-  const shownQuery = asked?.query ?? handoff?.query ?? '';
   const result = retrieval.data;
 
   return (
-    <div className="grid gap-6">
+    <div className="grid grid-cols-1 gap-6">
       <PageHeader
         overline={
           <Link to={`/w/${workspace.slug}/documents`} className="inline-flex items-center gap-1 rounded-sm hover:text-ink">
@@ -161,7 +172,7 @@ function Playground() {
 
       <KnowledgeLayerBanner />
 
-      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_19rem] 2xl:grid-cols-[minmax(0,1fr)_21rem]">
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_19rem] 2xl:grid-cols-[minmax(0,1fr)_21rem]">
         <div className="grid min-w-0 gap-4">
           <Card>
             <form
@@ -177,7 +188,7 @@ function Playground() {
                 error={queryError ?? undefined}
                 labelAside={
                   <span className={cn('text-xs tabular', query.length > QUERY_MAX ? 'text-danger-700' : 'text-faint')}>
-                    {query.length}/{QUERY_MAX}
+                    {query.length.toLocaleString()}/{QUERY_MAX.toLocaleString()}
                   </span>
                 }
               >
@@ -195,7 +206,7 @@ function Playground() {
                   }}
                   rows={3}
                   className="min-h-20 text-[14px]"
-                  placeholder="How many days of annual leave does an employee get?"
+                  placeholder="How many days of annual leave do new employees get?"
                   autoFocus={!handoff}
                 />
               </Field>
@@ -207,7 +218,7 @@ function Playground() {
                   onChange={setKnowledgeBaseIds}
                   loading={scope.isPending}
                 />
-                <Field label="Results" className="w-24" error={topKValid ? undefined : '1 to 50'}>
+                <Field label="Results" className="w-24" error={topKValid ? undefined : `1 to ${TOP_K_MAX}`}>
                   <Input
                     type="number"
                     inputMode="numeric"
@@ -245,10 +256,19 @@ function Playground() {
                     />
                   </Field>
                 ) : null}
-                <label className="flex h-9 cursor-pointer items-center gap-2 text-[13px] text-ink-soft select-none">
-                  <Switch checked={rerank} onCheckedChange={setRerank} aria-label="Rerank" />
-                  Rerank
-                </label>
+                <div className="grid gap-1.5">
+                  <span className="text-[13px] font-medium text-ink-soft">Rerank</span>
+                  <Segmented
+                    aria-label="Rerank"
+                    value={rerank}
+                    onValueChange={setRerank}
+                    options={[
+                      { value: 'default', label: 'Default' },
+                      { value: 'on', label: 'On' },
+                      { value: 'off', label: 'Off' },
+                    ]}
+                  />
+                </div>
                 <div className="ml-auto flex items-center gap-2">
                   <span className="hidden items-center gap-1 text-xs text-faint sm:inline-flex">
                     <Kbd>Ctrl</Kbd>
@@ -262,23 +282,35 @@ function Playground() {
                   </Button>
                 </div>
               </div>
-              <p className="-mt-1 text-xs text-muted">
+              <p className="-mt-1 text-xs leading-relaxed text-muted">
                 {mode === 'hybrid'
-                  ? 'Hybrid search blends keyword matching with meaning and always returns the best passages it has, even when none is really relevant.'
-                  : 'Dense search ranks by meaning alone; a minimum similarity drops weak matches.'}{' '}
-                Each search is recorded in the audit log, without the question.
+                  ? 'Keyword + meaning always returns the best passages it has, even when none is really relevant: there is no relevance floor.'
+                  : 'Meaning only ranks by similarity; a minimum similarity drops weak matches.'}{' '}
+                Rerank “Default” follows this deployment's setting. Each search is recorded in the audit log, without the question.
               </p>
             </form>
           </Card>
 
           <Results
-            query={shownQuery}
+            asked={asked}
             pending={retrieval.isPending}
-            startedAt={asked?.startedAt ?? null}
             result={result}
             problem={problem}
             blockedFor={blockedFor}
             error={retrieval.error}
+            scope={scope.data}
+            narrowed={knowledgeBaseIds.length > 0 || (mode === 'dense' && minScoreValue !== undefined)}
+            onRetry={() => asked && run(asked.body)}
+            onWiden={() => {
+              setKnowledgeBaseIds([]);
+              setMinScore('');
+              if (asked) {
+                const wider: RetrievalQuery = { ...asked.body };
+                delete wider.knowledgeBaseIds;
+                delete wider.minScore;
+                run(wider);
+              }
+            }}
           />
         </div>
 
@@ -351,33 +383,41 @@ function KnowledgeBasePicker({
 }
 
 function Results({
-  query,
+  asked,
   pending,
-  startedAt,
   result,
   problem,
   blockedFor,
   error,
+  scope,
+  narrowed,
+  onRetry,
+  onWiden,
 }: {
-  query: string;
+  asked: { body: RetrievalQuery; startedAt: number } | null;
   pending: boolean;
-  startedAt: number | null;
   result: RetrievalResponse | undefined;
   problem: RetrievalProblem | null;
   blockedFor: number;
   error: unknown;
+  scope: AccessScope | undefined;
+  narrowed: boolean;
+  onRetry: () => void;
+  onWiden: () => void;
 }) {
   const now = useNow();
+  const can = useCan();
+  const query = asked?.body.query ?? '';
   const terms = queryTerms(query);
 
   if (pending) {
-    const elapsed = startedAt ? Math.max(0, Math.round((now - startedAt) / 1000)) : 0;
+    const elapsed = asked ? Math.max(0, Math.round((now - asked.startedAt) / 1000)) : 0;
     return (
       <Card className="p-5">
         <p className="flex items-center gap-2 text-[13px] text-muted" aria-live="polite">
           <Timer className="size-4 text-faint" aria-hidden />
           Searching{elapsed >= 2 ? <span className="tabular"> · {elapsed} s</span> : '…'}
-          {elapsed >= 10 ? <span className="text-faint"> Local models can take a while; the server allows up to 60 s.</span> : null}
+          {elapsed >= 10 ? <span className="text-faint"> The AI service can take a while; the server allows up to 60 s.</span> : null}
         </p>
         <div className="mt-4 grid gap-5">
           {[0, 1, 2].map((index) => (
@@ -400,11 +440,16 @@ function Results({
     return (
       <Card className="p-5">
         <div className="flex items-start gap-3" role="alert">
-          <span className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-danger-200 bg-danger-50 text-danger-600">
-            <CircleAlert className="size-4" aria-hidden />
+          <span
+            className={cn(
+              'inline-flex size-9 shrink-0 items-center justify-center rounded-lg border',
+              problem.unavailable ? 'border-warning-200 bg-warning-50 text-warning-700' : 'border-danger-200 bg-danger-50 text-danger-600',
+            )}
+          >
+            {problem.unavailable ? <ServerCrash className="size-4" aria-hidden /> : <CircleAlert className="size-4" aria-hidden />}
           </span>
-          <div className="min-w-0">
-            <p className="text-[14px] font-semibold text-ink">{problem.unavailable ? 'Search is unavailable' : "The search didn't run"}</p>
+          <div className="min-w-0 flex-1">
+            <p className="text-[14px] font-semibold text-ink">{problem.unavailable ? 'Search is temporarily unavailable' : "The search didn't run"}</p>
             <p className="mt-0.5 text-[13px] leading-relaxed text-muted">
               {problem.message}
               {problem.retryAt ? (
@@ -414,8 +459,15 @@ function Results({
                   ' You can search again now.'
                 )
               ) : null}
+              {problem.retryable ? ' Your question and options are kept.' : null}
             </p>
-            {isApiError(error) ? <RequestReference requestId={error.requestId} className="mt-2" /> : null}
+            {problem.retryable && asked ? (
+              <Button size="sm" variant="secondary" className="mt-3" onClick={onRetry}>
+                <RefreshCw />
+                Try again
+              </Button>
+            ) : null}
+            {isApiError(error) ? <RequestReference requestId={error.requestId} className="mt-2 block w-fit" /> : null}
           </div>
         </div>
       </Card>
@@ -437,22 +489,13 @@ function Results({
   if (result.results.length === 0) {
     return (
       <Card>
-        <EmptyState
-          icon={<SearchX />}
-          title={
-            result.knowledgeBasesSearched === 0
-              ? "You don't have access to any knowledge base with searchable documents yet"
-              : `No passages found in the ${pluralize(result.knowledgeBasesSearched, 'knowledge base')} you can search`
-          }
-          description={
-            result.mode === 'dense' ? 'In Meaning only mode, a minimum similarity may have filtered everything out.' : 'Nothing searchable was in your scope.'
-          }
-        />
+        <EmptyExplanation result={result} scope={scope} narrowed={narrowed} onWiden={onWiden} />
       </Card>
     );
   }
 
   const topScore = result.results[0]?.score ?? 0;
+  const requestedTopK = asked?.body.topK;
   return (
     <Card className="overflow-hidden">
       <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-5 py-3">
@@ -464,18 +507,30 @@ function Results({
               <Gauge />
               Reranked
             </Badge>
-          ) : null}
-          <Badge tone="neutral">Clearance: {classificationLabel(result.effectiveClearance)}</Badge>
+          ) : (
+            <Badge tone="neutral">Not reranked</Badge>
+          )}
+          <Tooltip content="Your clearance in this workspace, and the one this search ran with (they differ when something narrowed it).">
+            <Badge tone="neutral" tabIndex={0}>
+              Clearance: {classificationLabel(result.clearance)}
+              {result.effectiveClearance !== result.clearance ? ` → ${classificationLabel(result.effectiveClearance)}` : null}
+            </Badge>
+          </Tooltip>
         </div>
       </header>
+      {requestedTopK !== undefined && result.topK < requestedTopK ? (
+        <p className="border-b border-line bg-well/40 px-5 py-2 text-xs text-muted">
+          You asked for {requestedTopK} results; this deployment caps a search at {result.topK}.
+        </p>
+      ) : null}
       <div className="divide-y divide-line/70 px-5">
         {result.results.map((passage) => (
-          <PassageCard key={passage.chunkId} passage={passage} topScore={topScore} terms={terms} />
+          <PassageCard key={passage.chunkId} passage={passage} topScore={topScore} terms={terms} linkToDocument={can('document:read')} />
         ))}
       </div>
       <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-line bg-well/40 px-5 py-2.5 text-xs text-muted">
         <span className="tabular">
-          {pluralize(result.results.length, 'passage')} from {pluralize(result.knowledgeBasesSearched, 'knowledge base')} ·{' '}
+          {pluralize(result.results.length, 'passage')} from {pluralize(result.knowledgeBasesSearched, 'knowledge base')} searched ·{' '}
           <Timings result={result} />
         </span>
         <span className="font-mono text-[11px] text-faint" title="Identifies this search in the audit log">
@@ -483,6 +538,72 @@ function Results({
         </span>
       </footer>
     </Card>
+  );
+}
+
+/**
+ * Spec §4.7/§5: hybrid search has no relevance floor, so an empty answer means
+ * nothing searchable was in scope, not "no good match". Say which.
+ */
+function EmptyExplanation({
+  result,
+  scope,
+  narrowed,
+  onWiden,
+}: {
+  result: RetrievalResponse;
+  scope: AccessScope | undefined;
+  narrowed: boolean;
+  onWiden: () => void;
+}) {
+  const can = useCan();
+  const knowledgeBases = useKnowledgeBases({ enabled: can('knowledgebase:read') });
+  const reachable = new Set((scope?.knowledgeBases ?? []).map((knowledgeBase) => knowledgeBase.id));
+  const inScope = knowledgeBases.list.filter((knowledgeBase) => reachable.has(knowledgeBase.id));
+  const processing = inScope.reduce((sum, knowledgeBase) => sum + knowledgeBase.stats.processing, 0);
+  const ready = inScope.reduce((sum, knowledgeBase) => sum + knowledgeBase.stats.ready, 0);
+
+  const reasons: ReactNode[] = [];
+  if (result.knowledgeBasesSearched === 0) {
+    reasons.push(
+      scope && scope.knowledgeBases.length === 0
+        ? "You can't reach any knowledge base yet: none is open to the workspace or granted to you."
+        : 'None of the knowledge bases searched could answer.',
+    );
+  }
+  if (processing > 0) reasons.push(`${pluralize(processing, 'document')} in reach ${processing === 1 ? 'is' : 'are'} still processing and not searchable yet.`);
+  if (knowledgeBases.data && ready === 0 && result.knowledgeBasesSearched > 0) {
+    reasons.push(`No document within your clearance (${classificationLabel(result.clearance)}) is ready in the bases you can reach.`);
+  }
+  if (narrowed) reasons.push('The narrowing may be too tight: specific knowledge bases or a minimum similarity.');
+  if (reasons.length === 0) reasons.push('Nothing searchable was in scope for this question.');
+
+  return (
+    <EmptyState
+      icon={<SearchX />}
+      title={
+        result.knowledgeBasesSearched === 0
+          ? 'Nothing to search'
+          : `No passages from the ${pluralize(result.knowledgeBasesSearched, 'knowledge base')} searched`
+      }
+      description={
+        <span className="grid gap-1 text-left">
+          {reasons.map((reason, index) => (
+            <span key={index} className="flex gap-1.5">
+              <span aria-hidden>·</span>
+              <span>{reason}</span>
+            </span>
+          ))}
+        </span>
+      }
+      action={
+        narrowed ? (
+          <Button size="sm" variant="secondary" onClick={onWiden}>
+            Search everything you can reach
+          </Button>
+        ) : null
+      }
+    />
   );
 }
 
@@ -498,7 +619,7 @@ function Timings({ result }: { result: RetrievalResponse }) {
     <Popover>
       <PopoverTrigger asChild>
         <button type="button" className="rounded-sm underline decoration-line-strong decoration-dotted underline-offset-4 hover:text-ink">
-          {result.timings.totalMs} ms
+          {Math.round(result.timings.totalMs)} ms
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-64" align="start">
@@ -507,12 +628,12 @@ function Timings({ result }: { result: RetrievalResponse }) {
           {rows.map(([label, ms]) => (
             <div key={label} className="flex items-center justify-between gap-3">
               <dt className="text-muted">{label}</dt>
-              <dd className="font-mono text-ink-soft tabular">{ms} ms</dd>
+              <dd className="font-mono text-ink-soft tabular">{Math.round(ms)} ms</dd>
             </div>
           ))}
           <div className="mt-1 flex items-center justify-between gap-3 border-t border-line pt-1.5 font-medium">
             <dt className="text-ink">Total</dt>
-            <dd className="font-mono text-ink tabular">{result.timings.totalMs} ms</dd>
+            <dd className="font-mono text-ink tabular">{Math.round(result.timings.totalMs)} ms</dd>
           </div>
         </dl>
       </PopoverContent>

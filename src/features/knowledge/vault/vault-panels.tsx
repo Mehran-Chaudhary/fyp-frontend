@@ -16,6 +16,7 @@ import { cn, pluralize } from '@/lib/utils';
 import { useWorkspace } from '@/features/workspaces/workspace-context';
 import { EntityCounts, MaskedText } from '../shared/masked-text';
 import { useKnowledgeAccess } from '../shared/use-knowledge-access';
+import { usePiiPolicy, useReportPolicyVersion } from '../shared/use-pii-policy';
 
 function PanelTitle({ children, aside }: { children: ReactNode; aside?: ReactNode }) {
   return (
@@ -26,14 +27,14 @@ function PanelTitle({ children, aside }: { children: ReactNode; aside?: ReactNod
   );
 }
 
-// ── RAG pipeline status (§6.3) ──────────────────────────────────────────────
+// ── RAG pipeline status (§4.1) ──────────────────────────────────────────────
 
 interface PipelinePanelProps {
   document: VaultDocument | null;
   knowledgeBase: KnowledgeBase | null;
   /** The workspace's default chunk size (E25), when readable. */
   workspaceChunkSize: number | null;
-  counts: { pending: number; indexing: number; failed: number };
+  counts: { queued: number; processing: number; failed: number };
   piiReportTo: string | null;
 }
 
@@ -87,7 +88,7 @@ export function PipelinePanel({ document, knowledgeBase, workspaceChunkSize, cou
           {status?.previousVersionServing ? (
             <p className="flex items-center gap-1.5 text-xs text-muted">
               <ShieldCheck className="size-3.5 shrink-0 text-success-600" aria-hidden />
-              Previous version still searchable
+              Version {document.activeIndexVersion} still answers searches
             </p>
           ) : document.status === 'UPLOADED' ? (
             <p className="text-xs text-muted">Stored and encrypted; waiting for a worker.</p>
@@ -95,8 +96,8 @@ export function PipelinePanel({ document, knowledgeBase, workspaceChunkSize, cou
         </div>
       ) : (
         <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-line px-4 py-3 text-xs text-muted">
-          <Count label="Pending" value={counts.pending} />
-          <Count label="Indexing" value={counts.indexing} tone={counts.indexing ? 'text-info-700' : undefined} />
+          <Count label="Queued" value={counts.queued} />
+          <Count label="Processing" value={counts.processing} tone={counts.processing ? 'text-info-700' : undefined} />
           <Count label="Failed" value={counts.failed} tone={counts.failed ? 'text-danger-700' : undefined} />
           <span className="basis-full text-[11.5px] text-faint">In view. Select a document to follow it.</span>
         </div>
@@ -177,7 +178,7 @@ function StepMarker({ index, state }: { index: number; state: StageState | 'idle
   }
 }
 
-// ── Vault statistics (§6.1) ─────────────────────────────────────────────────
+// ── Vault statistics (§5 "Document Vault") ─────────────────────────────────────────────────
 
 export function StatsPanel({
   knowledgeBases,
@@ -254,25 +255,32 @@ function Tile({ icon, label, value, dot, warn }: { icon: ReactNode; label: strin
   );
 }
 
-// ── PII redaction preview (§6.1) ────────────────────────────────────────────
+// ── PII redaction preview (§5 "Document Vault") ────────────────────────────────────────────
 
 export function PiiPreviewPanel({ document, knowledgeBase }: { document: VaultDocument | null; knowledgeBase: KnowledgeBase | null }) {
   const workspace = useWorkspace();
   const access = useKnowledgeAccess();
   const location = useLocation();
+  const policy = usePiiPolicy();
+  const policyVersion = useReportPolicyVersion();
   // Selecting rows quickly shouldn't spend the 30-per-minute report budget.
   const settledId = useDebouncedValue(document?.id ?? null, 350);
   const allowed = !!document && !!knowledgeBase && access.can('piiReport', knowledgeBase);
-  const ready = allowed && document.isSearchable && settledId === document.id;
+  const ready = allowed && document.isSearchable && settledId === document.id && policyVersion.settled;
 
   const report = useQuery({
-    ...documentPiiReportQuery(workspace.id, document?.id ?? '', 1, 5),
+    ...documentPiiReportQuery(workspace.id, document?.id ?? '', {
+      activeIndexVersion: document?.activeIndexVersion ?? null,
+      policyVersion: policyVersion.version,
+      page: 1,
+      limit: 5,
+    }),
     enabled: ready,
     retry: false,
   });
 
   const first = report.data?.chunks.find((chunk) => chunk.entities.length > 0);
-  const reportTo = document ? { pathname: `/w/${workspace.slug}/documents/${document.id}/pii`, search: location.search } : null;
+  const reportTo = document ? { pathname: `/w/${workspace.slug}/documents/${document.id}/privacy`, search: location.search } : null;
 
   let body: ReactNode;
   if (!document) {
@@ -299,6 +307,8 @@ export function PiiPreviewPanel({ document, knowledgeBase }: { document: VaultDo
             : messageFor(report.error)}
       </Hint>
     );
+  } else if (policy.data && !policy.data.enabled) {
+    body = <Hint tone="warning">Redaction is turned off for this workspace: models receive this text unmasked.</Hint>;
   } else if (!first) {
     body = (
       <Hint>

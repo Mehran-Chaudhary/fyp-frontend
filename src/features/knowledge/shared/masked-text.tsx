@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 import { entityTone } from './pii-colors';
 
 /**
- * A chunk as an AI model receives it (§6.5): the masked text with every
+ * A chunk as an AI model receives it (§5 "Privacy settings and previews"): the masked text with every
  * placeholder drawn as a coloured chip. With revealed values, each chip shows
  * the real value instead; hovering shows the type, score and how it was found.
  */

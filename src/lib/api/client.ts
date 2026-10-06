@@ -19,6 +19,10 @@ export type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
 
 export interface RequestOptions {
   method?: HttpMethod;
+  /**
+   * JSON by default. A `FormData` body is sent as multipart/form-data: the browser
+   * sets the Content-Type with its boundary, so none is set here (Phase 3 spec §2).
+   */
   body?: unknown;
   query?: Record<string, string | number | boolean | null | undefined>;
   /**
@@ -49,6 +53,12 @@ export interface RequestOptions {
   signal?: AbortSignal;
   /** The server gives up at 30 s; wait slightly longer so its answer arrives. */
   timeoutMs?: number;
+  /**
+   * Bytes sent so far, 0…1. `fetch` can't report upload progress, so a request with
+   * this callback travels over XMLHttpRequest instead, through the same pipeline
+   * (token, refresh-and-replay, request id, error envelope, global handler).
+   */
+  onUploadProgress?: (fraction: number) => void;
 }
 
 /** Fired for every failed request (unless `globalErrors: false`). */
@@ -107,6 +117,89 @@ function unexpectedResponse(res: Response): ApiError {
 
 type Parser<T> = (res: Response) => Promise<ApiResult<T>>;
 
+interface TransportInit {
+  method: HttpMethod;
+  headers: Record<string, string>;
+  body: BodyInit | undefined;
+  signal: AbortSignal;
+}
+
+/** Response headers of an XMLHttpRequest, as a Headers object. */
+export function parseResponseHeaders(raw: string): Headers {
+  const headers = new Headers();
+  for (const line of raw.split(/\r?\n/)) {
+    const colon = line.indexOf(':');
+    if (colon <= 0) continue;
+    const name = line.slice(0, colon).trim();
+    if (!name) continue;
+    try {
+      headers.append(name, line.slice(colon + 1).trim());
+    } catch {
+      // A header name the Headers API rejects: skip it rather than fail the request.
+    }
+  }
+  return headers;
+}
+
+const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
+
+/**
+ * `fetch` over XMLHttpRequest, for upload progress. Resolves with a real Response so
+ * the rest of the pipeline can't tell the difference; rejects like fetch does (a
+ * TypeError for a network failure, an AbortError when the signal fires).
+ */
+function xhrTransport(url: string, init: TransportInit, onProgress: (fraction: number) => void): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const aborted = () => new DOMException('The request was cancelled.', 'AbortError');
+    if (init.signal.aborted) {
+      reject(aborted());
+      return;
+    }
+    const xhr = new XMLHttpRequest();
+    const onAbort = () => xhr.abort();
+    const cleanUp = () => init.signal.removeEventListener('abort', onAbort);
+    init.signal.addEventListener('abort', onAbort, { once: true });
+
+    xhr.open(init.method, url);
+    xhr.withCredentials = true;
+    xhr.responseType = 'blob';
+    for (const [name, value] of Object.entries(init.headers)) xhr.setRequestHeader(name, value);
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) onProgress(Math.min(1, event.loaded / event.total));
+    };
+    xhr.onload = () => {
+      cleanUp();
+      if (xhr.status < 200 || xhr.status > 599) {
+        reject(new TypeError('Network request failed'));
+        return;
+      }
+      const body = NULL_BODY_STATUSES.has(xhr.status) ? null : (xhr.response as Blob | null);
+      resolve(
+        new Response(body, {
+          status: xhr.status,
+          statusText: xhr.statusText,
+          headers: parseResponseHeaders(xhr.getAllResponseHeaders()),
+        }),
+      );
+    };
+    xhr.onerror = () => {
+      cleanUp();
+      reject(new TypeError('Network request failed'));
+    };
+    xhr.onabort = () => {
+      cleanUp();
+      reject(aborted());
+    };
+    xhr.send((init.body ?? null) as XMLHttpRequestBodyInit | null);
+  });
+}
+
+function serializeBody(body: unknown): BodyInit | undefined {
+  if (body === undefined) return undefined;
+  if (typeof FormData !== 'undefined' && body instanceof FormData) return body;
+  return JSON.stringify(body);
+}
+
 /** Success must be the API's JSON envelope; anything else (an HTML page) is an error. */
 const parseJson = async <T>(res: Response): Promise<ApiResult<T>> => {
   const rateLimit = readRateLimit(res.headers);
@@ -147,7 +240,9 @@ async function send<T>(path: string, options: RequestOptions, parse: Parser<T>, 
     Accept: 'application/json',
     'X-Request-Id': newRequestId(),
   };
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const multipart = typeof FormData !== 'undefined' && body instanceof FormData;
+  // Multipart: the browser writes the Content-Type with its boundary.
+  if (body !== undefined && !multipart) headers['Content-Type'] = 'application/json';
   if (workspaceId) headers['X-Organization-Id'] = workspaceId;
 
   let usedToken: string | null = null;
@@ -168,15 +263,14 @@ async function send<T>(path: string, options: RequestOptions, parse: Parser<T>, 
   signal?.throwIfAborted();
 
   const timeout = AbortSignal.timeout(timeoutMs);
+  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  const url = buildUrl(path, options.query);
   let res: Response;
   try {
-    res = await fetch(buildUrl(path, options.query), {
-      method,
-      headers,
-      credentials: 'include',
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-    });
+    options.onUploadProgress?.(0);
+    res = options.onUploadProgress
+      ? await xhrTransport(url, { method, headers, body: serializeBody(body), signal: combined }, options.onUploadProgress)
+      : await fetch(url, { method, headers, credentials: 'include', body: serializeBody(body), signal: combined });
   } catch (cause) {
     if (signal?.aborted) throw cause; // the caller cancelled: not an error to show
     if (timeout.aborted) throw report(timeoutError(), options, path);

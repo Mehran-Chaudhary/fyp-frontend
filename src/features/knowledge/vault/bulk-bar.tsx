@@ -10,7 +10,7 @@ import { CLASSIFICATION_META } from '../shared/meta';
 import { useKnowledgeAccess } from '../shared/use-knowledge-access';
 import { useBulkActions, type BulkKind } from './use-bulk-actions';
 
-/** The bar that appears over the table's foot when rows are selected (§6.1). */
+/** The bar that appears over the table's foot when rows are selected (§5 "Document Vault"). */
 export function BulkBar({
   selected,
   knowledgeBases,

@@ -16,13 +16,13 @@ import { useCan, useWorkspace } from '@/features/workspaces/workspace-context';
 export interface KnowledgeAccess {
   /** The knowledge permissions you hold, as concrete keys. */
   permissions: ReadonlySet<string>;
-  /** Your clearance (§3.3); equals E77's `clearance`. */
+  /** Your clearance (§3.3); equals P3-API-23's `clearance`. */
   clearance: Classification;
   /** Classifications you may assign: upload, reclassify, a base's default. */
   assignable: Classification[];
   /** The owner bypasses compartments and never loses access to a base. */
   isOwner: boolean;
-  /** For the self-lockout guard (§6.7). */
+  /** For the self-lockout guard (§5 "Access tab"). */
   membershipId: string;
   roleIds: string[];
   has: (permission: string) => boolean;
@@ -58,7 +58,7 @@ export function useKnowledgeAccess(): KnowledgeAccess {
   }, [can, membership, workspace.summary]);
 }
 
-/** What the knowledge layer can't do on this server (§6.9), for this workspace. */
+/** What the knowledge layer can't do on this server (§10), for this workspace. */
 export function useLayerGap(): { gap: LayerGap | undefined; blocked: (capability: KnowledgeCapability) => boolean } {
   const workspace = useWorkspace();
   const gap = useKnowledgeLayer((state) => state.gaps[workspace.id]);
@@ -66,7 +66,7 @@ export function useLayerGap(): { gap: LayerGap | undefined; blocked: (capability
 }
 
 /**
- * Every knowledge base you can read (E60, all pages), with a lookup by id. The
+ * Every knowledge base you can read (P3-API-01, all pages), with a lookup by id. The
  * sidebar, the vault's filters, names in tables and the statistics all share it.
  */
 export function useKnowledgeBases(options: { enabled?: boolean } = {}) {

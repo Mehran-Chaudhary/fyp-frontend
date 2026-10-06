@@ -12,7 +12,7 @@ import { PassageCard } from '../search/passage-card';
 import type { RetrievalProblem } from '../search/use-retrieval';
 
 /**
- * The vault's "Ask" results (§6.1): passages from retrieval over the current
+ * The vault's "Ask" results (§5 "Document Vault"): passages from retrieval over the current
  * knowledge-base filter, above the table, each linking to its document.
  */
 export function AskResults({

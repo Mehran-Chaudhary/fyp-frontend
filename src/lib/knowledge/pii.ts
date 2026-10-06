@@ -5,7 +5,7 @@ export type MaskedPart = { kind: 'text'; text: string } | { kind: 'entity'; plac
 /** Placeholders as the server writes them: [PERSON_1], [EMAIL_ADDRESS_2], [CUSTOM_1]. */
 const PLACEHOLDER = /\[([A-Z][A-Z0-9_]*)_(\d+)\]/g;
 
-/** Splits `maskedText` into plain text and placeholder chips (Phase 3 spec §6.5). */
+/** Splits `maskedText` into plain text and placeholder chips (Phase 3 spec §5 "Privacy settings and previews"). */
 export function splitPlaceholders(maskedText: string, entities: readonly DetectedEntity[]): MaskedPart[] {
   const byPlaceholder = new Map(entities.map((entity) => [entity.placeholder, entity]));
   const parts: MaskedPart[] = [];
@@ -26,7 +26,7 @@ export function parsePlaceholder(placeholder: string): { type: string; index: nu
   return match ? { type: match[1], index: Number(match[2]) } : null;
 }
 
-/** The report has no totalPages: compute it (§6.5). */
+/** The report has no totalPages: compute it (§5 "Privacy settings and previews"). */
 export const reportPages = (totalChunks: number, limit: number): number => Math.max(1, Math.ceil(totalChunks / limit));
 
 /** "EMAIL_ADDRESS" → "Email address", for types the entity catalogue doesn't label. */

@@ -586,7 +586,11 @@ export interface UpsertGrantRequest {
 export type DocumentStatus = 'UPLOADED' | 'PARSING' | 'CHUNKING' | 'EMBEDDING' | 'READY' | 'FAILED';
 export type DocumentFileType = 'PDF' | 'DOCX' | 'TXT' | 'MARKDOWN';
 
-/** Keys may be missing; show only those present. */
+/**
+ * Timings and counts of the last processing run. The keys are open (spec §5
+ * "Document detail"): the known ones get labels, unknown numeric ones are still
+ * shown, and any key may be missing.
+ */
 export interface DocumentProcessingMetrics {
   queueWaitMs?: number;
   downloadMs?: number;
@@ -597,6 +601,7 @@ export interface DocumentProcessingMetrics {
   totalMs?: number;
   attempts?: number;
   embeddingTokens?: number;
+  [key: string]: number | undefined;
 }
 
 /** A vault document. Named so it doesn't clash with the DOM's `Document`. */
@@ -616,7 +621,7 @@ export interface VaultDocument {
   status: DocumentStatus;
   /** A failure explanation, or a retry notice while in progress. */
   statusMessage: string | null;
-  /** An open set (spec §4.1.2): never switch on it exhaustively. */
+  /** An open set (spec §4.3): never switch on it exhaustively. */
   failureCode: string | null;
   isSearchable: boolean;
   /** The run in progress, or the last one. */
@@ -653,11 +658,18 @@ export interface ListDocumentsParams {
   sortDirection?: SortDirection;
 }
 
+/**
+ * The text parts of an upload (P3-API-09). `classification` is always sent: an
+ * upload without one takes the base's default, which may be above your clearance
+ * (spec §3.3). Unknown parts are refused with 422, so there are no others.
+ */
 export interface UploadDocumentFields {
+  /** ≤255; the server uses the file name without its extension when absent. */
   title?: string;
+  /** ≤2000 */
   description?: string;
-  classification?: Classification;
-  /** Sent as one comma-separated string. */
+  classification: Classification;
+  /** Sent as one comma-separated string: ≤20 tags of ≤40 characters, lower-cased. */
   tags?: string[];
 }
 
@@ -749,7 +761,7 @@ export interface AccessScope {
 
 export interface DetectedEntity {
   entityType: string;
-  /** In the normalised text (NFKC, unified line endings): for ordering only. */
+  /** UTF-16 offsets in the server's canonicalised text: for ordering only, never for splicing (P3-G11). */
   start: number;
   end: number;
   score: number;
@@ -770,6 +782,14 @@ export interface ChunkPiiReport {
   entities: DetectedEntity[];
 }
 
+export interface RedactionTimings {
+  patternMs: number;
+  nerMs: number;
+  maskingMs: number;
+  totalMs: number;
+}
+
+/** P3-API-21. Its own `page`/`totalChunks`, not `meta.pagination`. */
 export interface DocumentPiiReport {
   documentId: string;
   chunks: ChunkPiiReport[];
@@ -781,37 +801,86 @@ export interface DocumentPiiReport {
   totalChunks: number;
   degraded: boolean;
   revealed: boolean;
-  timings: { patternMs: number; nerMs: number; maskingMs: number; totalMs: number };
+  timings: RedactionTimings;
 }
 
-/** GET …/pii/entity-types (a Phase 4 endpoint, `pii:policy:read`). */
+export type PiiDetector = 'pattern' | 'ner' | 'custom';
+
+/** P3-API-19 (`pii:policy:read`). */
 export interface PiiEntityType {
   type: string;
   label: string;
   description: string;
-  detector: 'pattern' | 'ner' | 'custom';
+  detector: PiiDetector;
   /** Whether this deployment can detect it right now. */
   available: boolean;
   enabled: boolean;
   example: string;
 }
 
-/** GET …/pii/policy (a Phase 4 endpoint, `pii:policy:read`). Phase 3 reads `enabled` only. */
+export type DetectorFailureMode = 'REFUSE' | 'DEGRADE_TO_PATTERNS';
+
+/** P3-API-17 (`pii:policy:read`). Before any save: `source: 'default'`, `version: 0`. */
 export interface PiiPolicy {
   source: 'default' | 'workspace';
+  /** Every successful save increments it, even a no-op one (P3-G05). */
   version: number;
   enabled: boolean;
+  /** Upper-cased, de-duplicated and sorted; `CUSTOM` exactly when the deny list is non-empty. */
   entityTypes: string[];
+  /** The subset that needs the NER detector. */
   nerEntityTypes: string[];
   scoreThreshold: number;
-  onDetectorFailure: 'REFUSE' | 'DEGRADE_TO_PATTERNS';
+  onDetectorFailure: DetectorFailureMode;
   language: string;
   allowList: string[];
+  /** Null unless you hold pii:policy:update; `denyListCount` is always there. */
   denyList: string[] | null;
   denyListCount: number;
-  nerDetector: { kind: string; configured: boolean; missingConfiguration: string[] };
+  nerDetector: { kind: 'ai-service' | 'presidio' | 'none' | (string & {}); configured: boolean; missingConfiguration: string[] };
+  /** Always shown (e.g. "Redaction is disabled…", a missing NER detector). */
   warnings: string[];
   updatedAt: string | null;
+}
+
+/**
+ * P3-API-18. Despite PUT, a partial update: omitted fields keep their values. Send
+ * only real changes plus `expectedVersion` (a mismatch answers 409 RESOURCE_CONFLICT).
+ */
+export interface UpdatePiiPolicyRequest {
+  enabled?: boolean;
+  /** ≤60 of /^[A-Za-z][A-Za-z0-9_]{1,40}$/; any Presidio name is accepted. */
+  entityTypes?: string[];
+  /** 0–1 */
+  scoreThreshold?: number;
+  onDetectorFailure?: DetectorFailureMode;
+  /** /^[a-z]{2}(-[A-Z]{2})?$/ */
+  language?: string;
+  /** ≤200 non-empty terms of ≤100 characters; [] clears. */
+  allowList?: string[];
+  denyList?: string[];
+  expectedVersion?: number;
+}
+
+/** P3-API-20. `reveal` needs pii:reveal and is audited as a CRITICAL event. */
+export interface AnalyzeTextRequest {
+  /** Non-empty; the deployment caps it (20,000 characters by default). */
+  text: string;
+  reveal?: boolean;
+}
+
+/** P3-API-20. Render `maskedText`; entity offsets refer to the server's canonicalised text (P3-G11). */
+export interface AnalyzeResult {
+  maskedText: string;
+  entities: DetectedEntity[];
+  /** Distinct entities (placeholders). */
+  entityCount: number;
+  byType: Record<string, number>;
+  /** NER was unavailable and the policy allowed pattern-only detection. */
+  degraded: boolean;
+  detectors: string[];
+  revealed: boolean;
+  timings: RedactionTimings;
 }
 
 // ── Error codes (full list: backend src/common/enums/error-code.enum.ts) ────

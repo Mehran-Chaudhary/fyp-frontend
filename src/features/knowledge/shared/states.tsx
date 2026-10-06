@@ -9,7 +9,7 @@ import { useCan, useWorkspace } from '@/features/workspaces/workspace-context';
 import { useLayerGap } from './use-knowledge-access';
 
 /**
- * "Document uploads and search aren't set up on this server yet" (§6.9). Shown
+ * "Document uploads and search aren't set up on this server yet" (§10). Shown
  * once the server has said so; the missing settings are named only to people who
  * can change the workspace, since they're server configuration.
  */

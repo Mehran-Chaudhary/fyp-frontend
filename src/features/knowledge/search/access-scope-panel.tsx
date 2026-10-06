@@ -8,7 +8,7 @@ import { AccessLevelBadge, ClassificationBadge } from '../shared/badges';
 import { KnowledgeBaseDot } from '../shared/kb-identity';
 import { classificationLabel } from '../shared/meta';
 
-/** "Your access" (§6.8, E77): the clearance and the bases search can reach for you. */
+/** "Your access" (§5 "Retrieval playground", P3-API-23): the clearance and the bases search can reach for you. */
 export function AccessScopePanel({ scope }: { scope: UseQueryResult<AccessScope> }) {
   return (
     <Card>
@@ -55,20 +55,20 @@ export function AccessScopePanel({ scope }: { scope: UseQueryResult<AccessScope>
                     <KnowledgeBaseDot id={knowledgeBase.id} />
                     <span className="min-w-0 flex-1 truncate">{knowledgeBase.name}</span>
                     {knowledgeBase.accessMode === 'RESTRICTED' ? (
-                      <>
-                        <Lock className="size-3 shrink-0 text-faint" aria-label="Restricted" />
-                        <AccessLevelBadge level={knowledgeBase.access} />
-                      </>
+                      <Lock className="size-3 shrink-0 text-faint" aria-label="Restricted" />
                     ) : (
                       <Users className="size-3 shrink-0 text-faint" aria-label="Open to the workspace" />
                     )}
+                    <AccessLevelBadge level={knowledgeBase.access} />
                   </li>
                 ))}
               </ul>
             ) : null}
           </div>
           <p className="border-t border-line pt-3 text-xs leading-relaxed text-muted">
-            Search only returns passages you're allowed to read. Anything outside this scope is never retrieved.
+            Search only returns passages you're allowed to read: the policy is applied inside the vector search and again when text
+            is read. Open bases put everyone who can see them at Manage; your role still decides what you may do. Other people may
+            reach different bases.
           </p>
         </div>
       )}

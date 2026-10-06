@@ -1,12 +1,15 @@
 import { useStore } from 'zustand';
+import { documentsApi } from '../api/endpoints';
 import { authEvents } from '../api/token-manager';
+import type { VaultDocument } from '../api/types';
 import { queryKeys } from '../queries';
 import { queryClient } from '../query-client';
 import { refreshMyAccess } from '../workspace/cache';
 import { afterUpload } from './cache';
+import { defaultUploadTitle, sanitizeUploadFilename } from './files';
 import { recordLayerGap } from './layer';
 import { uploadDocument } from './upload';
-import { createUploadQueue, type UploadQueueState } from './upload-queue';
+import { createUploadQueue, matchesUpload, type UploadItem, type UploadQueueState } from './upload-queue';
 
 /**
  * The app's one upload queue, wired to the API and the query cache. Finished
@@ -26,9 +29,36 @@ function refreshSoon(workspaceId: string) {
   );
 }
 
+/**
+ * Spec §5 "Upload" step 7: refresh the list, searching by title, before offering a
+ * retry. The newest documents of the base whose title contains the expected one are
+ * compared by size, stored name and creation time.
+ */
+async function findUploaded(item: UploadItem): Promise<VaultDocument | null> {
+  const filename = sanitizeUploadFilename(item.file.name);
+  const title = item.fields.title?.trim() || defaultUploadTitle(item.file.name);
+  const result = await documentsApi.list(item.workspaceId, {
+    knowledgeBaseId: item.knowledgeBaseId,
+    search: title.slice(0, 200),
+    sortBy: 'createdAt',
+    sortDirection: 'DESC',
+    limit: 50,
+  });
+  return (
+    result.items.find((document) =>
+      matchesUpload(document, { knowledgeBaseId: item.knowledgeBaseId, size: item.file.size, filename, title, sentAt: item.sentAt }),
+    ) ?? null
+  );
+}
+
 export const uploadQueue = createUploadQueue({
   upload: uploadDocument,
-  onUploaded: refreshSoon,
+  findUploaded,
+  onUploaded: (workspaceId, document) => {
+    // The 202 is the document as stored: the drawer can open it at once.
+    queryClient.setQueryData(queryKeys.documentDetail(workspaceId, document.id), document);
+    refreshSoon(workspaceId);
+  },
   onRefetch: (workspaceId, what) => {
     if (what === 'permissions') void refreshMyAccess(workspaceId);
     else void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBases(workspaceId) });

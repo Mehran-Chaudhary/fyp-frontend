@@ -20,6 +20,7 @@ import {
   writeVaultFilters,
   type VaultFilters,
 } from '@/lib/knowledge/filters';
+import { statusGroupOf } from '@/lib/knowledge/status';
 import { useDocumentTitle } from '@/lib/hooks';
 import { documentsQuery, queryKeys, workspaceDetailsQuery } from '@/lib/queries';
 import { queryClient } from '@/lib/query-client';
@@ -31,6 +32,7 @@ import { DeleteDocumentDialog, ReclassifyDialog } from '../document/document-dia
 import { useDownloadDocument, useReindexDocument } from '../document/document-mutations';
 import { handOffQuery } from '../search/handoff';
 import { describeRetrievalError, useRetrieval, type RetrievalProblem } from '../search/use-retrieval';
+import { ProcessingNotice } from '../shared/processing-notice';
 import { KnowledgeLayerBanner } from '../shared/states';
 import { useKnowledgeAccess, useKnowledgeBases, useLayerGap } from '../shared/use-knowledge-access';
 import { useSettleWatcher } from '../shared/use-settle-watcher';
@@ -44,7 +46,7 @@ import { usePageFileDrop } from './use-page-file-drop';
 import { PiiPreviewPanel, PipelinePanel, StatsPanel } from './vault-panels';
 import { ActiveFilters, VaultToolbar, type SearchMode } from './vault-toolbar';
 
-/** Document Vault (Phase 3 spec §6.1, mockup 5). The document drawer renders over it as a child route. */
+/** Document Vault (Phase 3 spec §5 "Document Vault", mockup 5). The document drawer renders over it as a child route. */
 export function VaultPage() {
   const workspace = useWorkspace();
   const can = useCan();
@@ -75,18 +77,19 @@ function Vault() {
   const knowledgeBases = useKnowledgeBases();
   const details = useQuery({ ...workspaceDetailsQuery(workspace.id), enabled: can('workspace:read') });
 
-  // ── Documents (E69), polled while any row is processing (§10.3) ──
+  // ── Documents (P3-API-10), polled while any row is processing (§9.3) ──
   const validKb = isUuid(filters.kb) ? filters.kb : null;
   const canReadDocuments = access.has('document:read');
   const listParams = toDocumentListParams(filters, validKb);
-  const documents = useQuery({ ...documentsQuery(workspace.id, listParams), enabled: canReadDocuments });
+  const listQuery = documentsQuery(workspace.id, listParams);
+  const documents = useQuery({ ...listQuery, enabled: canReadDocuments });
   const items = useMemo(() => documents.data?.items ?? [], [documents.data]);
   useSettleWatcher(documents.data?.items);
 
   const update = (patch: Partial<VaultFilters>) =>
     setParams((previous) => writeVaultFilters(previous, patch), { replace: true, preventScrollReset: true });
 
-  // A `kb` filter naming a base that answered 404 (or isn't an id): drop it and say so (§6.1).
+  // A `kb` filter naming a base that answered 404 (or isn't an id): drop it and say so (§5 "Document Vault").
   const kbGone = !!filters.kb && (!validKb || hasCode(documents.error, 'KNOWLEDGE_BASE_NOT_FOUND'));
   useEffect(() => {
     if (!kbGone) return;
@@ -119,7 +122,7 @@ function Vault() {
   const selectable = !access.lacks('reindex') || !access.lacks('editDocument') || !access.lacks('deleteDocument');
   const setSelected = (ids: Set<string>) => setSelection({ key: pageKey, ids });
 
-  // ── Upload (§6.2) ──
+  // ── Upload (§5 "Upload") ──
   const uploadable = knowledgeBases.list.filter((knowledgeBase) => access.can('upload', knowledgeBase));
   const canUpload = uploadable.length > 0;
   const uploadBlocked = layer.blocked('upload');
@@ -138,12 +141,12 @@ function Vault() {
   const downloads = useDownloadDocument();
   const deleteDialog = useDialogTarget<VaultDocument>();
   const reclassifyDialog = useDialogTarget<VaultDocument>();
-  const open = (document: VaultDocument, tab?: 'chunks' | 'pii') => {
+  const open = (document: VaultDocument, tab?: 'chunks' | 'privacy') => {
     setActiveId(document.id);
     void navigate({ pathname: `${base}/documents/${document.id}${tab ? `/${tab}` : ''}`, search: location.search }, { preventScrollReset: true });
   };
 
-  // ── Ask (§6.1): retrieval over the current knowledge-base filter ──
+  // ── Ask (§5 "Document Vault"): retrieval over the current knowledge-base filter ──
   const canAsk = !access.lacks('search');
   const [mode, setMode] = useState<SearchMode>('titles');
   const retrieval = useRetrieval();
@@ -167,18 +170,18 @@ function Vault() {
   };
   const closeAsk = () => {
     setAsked(null);
-    retrieval.reset();
+    retrieval.cancel();
   };
 
   const filtered = hasActiveFilters(filters);
   const total = documents.data?.pagination.totalItems;
   const counts = {
-    pending: items.filter((document) => document.status === 'UPLOADED').length,
-    indexing: items.filter((document) => ['PARSING', 'CHUNKING', 'EMBEDDING'].includes(document.status)).length,
+    queued: items.filter((document) => statusGroupOf(document.status) === 'queued').length,
+    processing: items.filter((document) => statusGroupOf(document.status) === 'processing').length,
     failed: items.filter((document) => document.status === 'FAILED').length,
   };
 
-  const clearFilters = () => update({ kb: null, status: 'all', classification: null, q: '' });
+  const clearFilters = () => update({ kb: null, status: [], classification: null, q: '' });
   const empty = filtered ? (
     <EmptyState
       icon={<SearchX />}
@@ -316,6 +319,14 @@ function Vault() {
                 />
               ) : null}
 
+              <ProcessingNotice
+                queryKey={listQuery.queryKey}
+                documents={items}
+                onRefresh={() => void documents.refetch()}
+                refreshing={documents.isFetching}
+                className="mx-3 mb-3 sm:mx-4"
+              />
+
               <div className="relative border-t border-line">
                 {documents.isFetching && documents.isPlaceholderData ? (
                   <div className="absolute inset-x-0 top-0 z-10 h-0.5 overflow-hidden" aria-hidden>
@@ -386,7 +397,7 @@ function Vault() {
             counts={counts}
             piiReportTo={
               activeDocument && access.can('piiReport', activeKnowledgeBase)
-                ? `${base}/documents/${activeDocument.id}/pii${location.search}`
+                ? `${base}/documents/${activeDocument.id}/privacy${location.search}`
                 : null
             }
           />

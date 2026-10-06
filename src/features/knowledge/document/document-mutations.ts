@@ -1,7 +1,7 @@
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
 import { documentsApi } from '@/lib/api/endpoints';
-import { hasCode } from '@/lib/api/errors';
+import { hasCode, isOutcomeUnknown } from '@/lib/api/errors';
 import type { UpdateDocumentRequest, VaultDocument } from '@/lib/api/types';
 import { afterDocumentGone, afterDocumentUpdated, afterReindex } from '@/lib/knowledge/cache';
 import { downloadDocument } from '@/lib/knowledge/download';
@@ -11,7 +11,7 @@ import { toast, toastError } from '@/lib/toast';
 import { useWorkspace } from '@/features/workspaces/workspace-context';
 
 /**
- * The document actions of §6.4, shared by the vault's rows and the drawer. Every
+ * The document actions of §5 "Document detail", shared by the vault's rows and the drawer. Every
  * refusal has a designed message; a 404 means the document is gone for this user
  * (deleted, or reclassified above their clearance) and is handled the same way
  * everywhere.
@@ -25,7 +25,7 @@ export function handleDocumentGone(workspaceId: string, documentId: string): voi
   });
 }
 
-/** E74: reindex a READY document, or retry a FAILED one. Not destructive, so no confirmation. */
+/** P3-API-15: reindex a READY document, or retry a FAILED one. Not destructive, so no confirmation. */
 export function useReindexDocument() {
   const workspace = useWorkspace();
   return useMutation({
@@ -50,12 +50,21 @@ export function useReindexDocument() {
       if (hasCode(error, 'KNOWLEDGE_BASE_ACCESS_DENIED')) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBases(workspace.id) });
       }
+      if (isOutcomeUnknown(error) && !hasCode(error, 'KNOWLEDGE_LAYER_NOT_CONFIGURED', 'AI_SERVICE_UNAVAILABLE', 'VECTOR_STORE_UNAVAILABLE')) {
+        // Never replayed (spec §2): re-read it; a status back at Queued means it went through.
+        void queryClient.invalidateQueries({ queryKey: queryKeys.documentDetail(workspace.id, document.id) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.documents(workspace.id) });
+        toast.warning("We couldn't confirm the reindex", {
+          description: 'The document was re-read. If its status shows Queued or Processing, it went through; otherwise try again.',
+        });
+        return;
+      }
       toastError(error, "Couldn't reindex");
     },
   });
 }
 
-/** E73: edit metadata or reclassify. The caller shows field errors; this handles the rest. */
+/** P3-API-14: edit metadata or reclassify. The caller shows field errors; this handles the rest. */
 export function useUpdateDocument(documentId: string) {
   const workspace = useWorkspace();
   return useMutation({
@@ -70,7 +79,7 @@ export function useUpdateDocument(documentId: string) {
   });
 }
 
-/** E75. The caller confirms first; the content is unrecoverable at once. */
+/** P3-API-16. The caller confirms first; the content is unrecoverable at once. */
 export function useDeleteDocument() {
   const workspace = useWorkspace();
   return useMutation({
@@ -90,7 +99,7 @@ export function useDeleteDocument() {
 }
 
 /**
- * E72, with a spinner per document. It can take up to two minutes for big files,
+ * P3-API-13, with a spinner per document. It can take up to two minutes for big files,
  * and every download is audited.
  */
 export function useDownloadDocument() {

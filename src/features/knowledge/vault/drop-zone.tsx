@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 import { FileGlyph } from '../shared/file-glyph';
 
 /**
- * The mockup's drop zone (§6.1): "Drop PDF, DOCX, TXT or Markdown files here".
+ * The mockup's drop zone (§5 "Document Vault"): "Drop PDF, DOCX, TXT or Markdown files here".
  * Dropping anywhere on the page works too; this is the visible invitation, and
  * clicking it opens the file picker.
  */

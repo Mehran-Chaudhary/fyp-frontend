@@ -4,7 +4,7 @@ import { afterProcessingSettled, settledDocuments } from '@/lib/knowledge/cache'
 import { useWorkspace } from '@/features/workspaces/workspace-context';
 
 /**
- * §10.3: when a poll shows documents leaving the in-progress states, the
+ * §9.3: when a poll shows documents leaving the in-progress states, the
  * knowledge bases' stats changed and the documents' chunks now exist (or are a
  * new version), so refresh those too.
  */

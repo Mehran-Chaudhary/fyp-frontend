@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 
 /**
- * What the knowledge layer can't do on this server (Phase 3 spec §6.9). Uploads,
+ * What the knowledge layer can't do on this server (Phase 3 spec §10). Uploads,
  * reindexing, downloads and search need object storage, Qdrant and the AI service;
  * until a server has them it answers 503 KNOWLEDGE_LAYER_NOT_CONFIGURED naming the
  * missing settings. The first such answer is remembered for the session, so the
@@ -11,7 +11,7 @@ import { create } from 'zustand';
 
 export type KnowledgeCapability = 'upload' | 'reindex' | 'download' | 'search';
 
-/** The server settings each capability needs (§6.9). */
+/** The server settings each capability needs (§10). */
 const NEEDS: Readonly<Record<KnowledgeCapability, readonly string[]>> = {
   upload: ['STORAGE_S3_BUCKET', 'QDRANT_URL', 'AI_SERVICE_URL'],
   reindex: ['STORAGE_S3_BUCKET', 'QDRANT_URL', 'AI_SERVICE_URL'],

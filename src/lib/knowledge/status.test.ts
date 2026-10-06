@@ -1,45 +1,66 @@
 import { describe, expect, it } from 'vitest';
 import type { VaultDocument } from '../api/types';
-import { displayStatus, failedStage, failureHint, pipelineStates, pollInterval, retryCanHelp } from './status';
+import { canReindexNow, displayStatus, failedStage, failureHint, pipelineStates, retryCanHelp, statusGroupOf } from './status';
 
-const base = { statusMessage: null, isSearchable: false, indexVersion: 1, activeIndexVersion: null };
+const base = { statusMessage: null, failureCode: null, isSearchable: false, activeIndexVersion: null };
 
-describe('displayStatus', () => {
-  it('maps statuses to the mockup badges', () => {
-    expect(displayStatus({ ...base, status: 'UPLOADED' }).badge).toBe('PENDING');
-    expect(displayStatus({ ...base, status: 'PARSING' }).badge).toBe('INDEXING');
-    expect(displayStatus({ ...base, status: 'CHUNKING' }).badge).toBe('INDEXING');
-    expect(displayStatus({ ...base, status: 'EMBEDDING' }).badge).toBe('INDEXING');
-    expect(displayStatus({ ...base, status: 'READY', isSearchable: true, activeIndexVersion: 1 }).badge).toBe('INDEXED');
-    expect(displayStatus({ ...base, status: 'FAILED' }).badge).toBe('FAILED');
+describe('displayStatus (spec §4.1)', () => {
+  it('uses the suggested labels', () => {
+    expect(displayStatus({ ...base, status: 'UPLOADED' }).label).toBe('Queued');
+    expect(displayStatus({ ...base, status: 'PARSING' })).toMatchObject({ label: 'Processing', stage: 'Reading text', tone: 'progress' });
+    expect(displayStatus({ ...base, status: 'CHUNKING' }).stage).toBe('Saving chunks');
+    expect(displayStatus({ ...base, status: 'EMBEDDING' }).stage).toBe('Indexing');
+    expect(displayStatus({ ...base, status: 'READY', isSearchable: true, activeIndexVersion: 1 })).toMatchObject({ label: 'Ready', tone: 'success' });
+    expect(displayStatus({ ...base, status: 'FAILED' })).toMatchObject({ label: 'Failed', tone: 'danger' });
   });
 
-  it('says a reindex keeps the previous version searchable', () => {
-    const status = displayStatus({ status: 'EMBEDDING', statusMessage: null, indexVersion: 2, activeIndexVersion: 1, isSearchable: true });
-    expect(status.badge).toBe('INDEXING');
-    expect(status.stage).toBe('Reindexing: embedding');
-    expect(status.previousVersionServing).toBe(true);
+  it('says a reindex keeps the previous version searchable (§4.2)', () => {
+    const status = displayStatus({ ...base, status: 'EMBEDDING', activeIndexVersion: 1, isSearchable: true });
+    expect(status).toMatchObject({ label: 'Processing', stage: 'Reindexing · indexing', previousVersionServing: true, reindexing: true });
+    expect(displayStatus({ ...base, status: 'UPLOADED', activeIndexVersion: 1, isSearchable: true }).stage).toBe('Reindex queued');
   });
 
-  it('says a failed reindex keeps the previous version searchable', () => {
-    const status = displayStatus({ status: 'FAILED', statusMessage: 'The AI service was unavailable.', indexVersion: 2, activeIndexVersion: 1, isSearchable: true });
-    expect(status.badge).toBe('FAILED');
-    expect(status.previousVersionServing).toBe(true);
+  it('shows a failed reindex as "Reindex failed", not a plain failure', () => {
+    const status = displayStatus({
+      ...base,
+      status: 'FAILED',
+      statusMessage: 'The AI service was unavailable.',
+      failureCode: 'AI_SERVICE_UNAVAILABLE',
+      activeIndexVersion: 1,
+      isSearchable: true,
+    });
+    expect(status).toMatchObject({ label: 'Reindex failed', tone: 'warning', previousVersionServing: true, retryHelps: true });
+    expect(status.detail).toBe('The AI service was unavailable.');
   });
 
-  it('marks an in-progress document with a message as retrying', () => {
-    const status = displayStatus({ ...base, status: 'PARSING', statusMessage: 'Attempt 1 of 3 failed (AI_SERVICE_UNAVAILABLE); retrying.' });
-    expect(status.retrying).toBe(true);
+  it('treats a message on an in-progress document as a retry warning (§4.3)', () => {
+    const status = displayStatus({ ...base, status: 'PARSING', statusMessage: 'Attempt 1 of 5 failed (AI_SERVICE_UNAVAILABLE); retrying.' });
+    expect(status).toMatchObject({ retrying: true, tone: 'warning', label: 'Processing' });
     expect(displayStatus({ ...base, status: 'FAILED', statusMessage: 'x' }).retrying).toBe(false);
   });
 
-  it('a first run is not a reindex', () => {
-    expect(displayStatus({ ...base, status: 'PARSING' }).stage).toBe('Extracting text');
-    expect(displayStatus({ ...base, status: 'PARSING' }).previousVersionServing).toBe(false);
+  it('a retried never-indexed document is not a reindex', () => {
+    const status = displayStatus({ ...base, status: 'PARSING' });
+    expect(status.stage).toBe('Reading text');
+    expect(status.previousVersionServing).toBe(false);
+  });
+
+  it('groups statuses for filters and counts', () => {
+    expect(statusGroupOf('UPLOADED')).toBe('queued');
+    expect(statusGroupOf('CHUNKING')).toBe('processing');
+    expect(statusGroupOf('READY')).toBe('ready');
+    expect(statusGroupOf('FAILED')).toBe('failed');
+  });
+
+  it('accepts a reindex only from READY or FAILED', () => {
+    expect(canReindexNow({ status: 'READY' })).toBe(true);
+    expect(canReindexNow({ status: 'FAILED' })).toBe(true);
+    expect(canReindexNow({ status: 'EMBEDDING' })).toBe(false);
+    expect(canReindexNow({ status: 'UPLOADED' })).toBe(false);
   });
 });
 
-describe('retries', () => {
+describe('failures (the code set is open)', () => {
   it('knows which failures a retry can fix', () => {
     expect(retryCanHelp('ENCRYPTED_DOCUMENT')).toBe(false);
     expect(retryCanHelp('DOCUMENT_EMPTY')).toBe(false);
@@ -49,10 +70,12 @@ describe('retries', () => {
     expect(retryCanHelp(null)).toBe(true);
   });
 
-  it('gives hints without switching exhaustively', () => {
+  it('gives hints and icons without switching exhaustively', () => {
+    expect(failureHint('DOCUMENT_EMPTY')).toMatchObject({ retryHelps: false, kind: 'file' });
     expect(failureHint('DOCUMENT_EMPTY').hint).toMatch(/text-based/);
-    expect(failureHint('VECTOR_STORE_UNAVAILABLE').transient).toBe(true);
-    expect(failureHint('UNHEARD_OF')).toEqual({ hint: null, retryHelps: true, transient: false });
+    expect(failureHint('VECTOR_STORE_UNAVAILABLE')).toMatchObject({ transient: true, kind: 'service' });
+    expect(failureHint('INGESTION_TIMEOUT')).toMatchObject({ retryHelps: true, kind: 'time' });
+    expect(failureHint('UNHEARD_OF')).toEqual({ hint: null, retryHelps: true, transient: false, kind: 'unknown' });
   });
 });
 
@@ -85,34 +108,5 @@ describe('pipeline stages', () => {
     expect(failedStage(doc('FAILED', 'AI_SERVICE_UNAVAILABLE', {}))).toBe('extract');
     expect(failedStage(doc('FAILED', 'AI_SERVICE_UNAVAILABLE', { parseMs: 1, persistMs: 2 }))).toBe('embed');
     expect(failedStage(doc('FAILED', 'INGESTION_ERROR', { parseMs: 1 }))).toBe('chunk');
-  });
-});
-
-describe('pollInterval', () => {
-  const now = Date.parse('2026-09-30T12:00:00.000Z');
-  const ago = (ms: number) => new Date(now - ms).toISOString();
-
-  it('does not poll when nothing is in progress', () => {
-    expect(pollInterval([], now)).toBe(false);
-    expect(pollInterval([{ status: 'READY', lastStatusAt: ago(1_000) }], now)).toBe(false);
-  });
-
-  it('polls faster while statuses are moving', () => {
-    expect(pollInterval([{ status: 'PARSING', lastStatusAt: ago(5_000) }], now)).toBe(2_000);
-    expect(pollInterval([{ status: 'EMBEDDING', lastStatusAt: ago(5 * 60_000) }], now)).toBe(5_000);
-    expect(pollInterval([{ status: 'PARSING', lastStatusAt: ago(20 * 60_000) }], now)).toBe(15_000);
-  });
-
-  it('uses the most recent change among the moving documents', () => {
-    expect(
-      pollInterval(
-        [
-          { status: 'PARSING', lastStatusAt: ago(20 * 60_000) },
-          { status: 'UPLOADED', lastStatusAt: ago(3_000) },
-          { status: 'READY', lastStatusAt: ago(1_000) },
-        ],
-        now,
-      ),
-    ).toBe(2_000);
   });
 });

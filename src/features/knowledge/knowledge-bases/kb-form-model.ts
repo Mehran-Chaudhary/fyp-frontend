@@ -7,8 +7,8 @@ import type {
 } from '@/lib/api/types';
 
 /**
- * The knowledge-base form (Phase 3 spec §6.6, §9): its values, validation, and the
- * requests it produces. Chunk settings are inherited unless set (§4.2): knowledge
+ * The knowledge-base form (Phase 3 spec §5 "Knowledge bases", §6): its values, validation, and the
+ * requests it produces. Chunk settings are inherited unless set (§4.5): knowledge
  * base → workspace settings → platform default.
  */
 
@@ -17,7 +17,7 @@ export const DESCRIPTION_MAX = 2000;
 export const CHUNK_SIZE_MIN = 64;
 export const CHUNK_SIZE_MAX = 4096;
 export const CHUNK_OVERLAP_MAX = 1024;
-/** The platform's defaults, "unless the deployment changed them" (§4.2). */
+/** The platform's defaults, "unless the deployment changed them" (§4.5). */
 export const PLATFORM_CHUNK_SIZE = 512;
 export const PLATFORM_CHUNK_OVERLAP = 64;
 
@@ -84,7 +84,7 @@ export function effectiveChunkSize(values: Pick<KbFormValues, 'chunkSizeMode' | 
   return inherited.size ?? PLATFORM_CHUNK_SIZE;
 }
 
-/** §9's client-side rules. The server checks the same, and its 422s land on the same fields. */
+/** Spec §6's client-side rules. The server checks the same, and its 422s land on the same fields. */
 export function validateKbForm(
   values: KbFormValues,
   inherited: InheritedChunking,
@@ -134,7 +134,7 @@ export function toCreateRequest(values: KbFormValues): CreateKnowledgeBaseReques
   return body;
 }
 
-/** Only what changed (§6.6); `null` chunk settings go back to inheriting, `null` removes the description. */
+/** Only what changed (§5 "Knowledge bases"); `null` chunk settings go back to inheriting, `null` removes the description. */
 export function toUpdateRequest(values: KbFormValues, knowledgeBase: KnowledgeBase): UpdateKnowledgeBaseRequest {
   const body: UpdateKnowledgeBaseRequest = {};
   const name = values.name.trim();

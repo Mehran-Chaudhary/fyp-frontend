@@ -10,10 +10,10 @@ import { Input } from '@/components/ui/input';
 import { Avatar, Skeleton } from '@/components/ui/misc';
 import { RadioGroup } from '@/components/ui/radio-group';
 import { Segmented } from '@/components/ui/segmented';
-import { hasCode } from '@/lib/api/errors';
+import { hasCode, isOutcomeUnknown } from '@/lib/api/errors';
 import type { AccessLevel, GrantSubjectType, KnowledgeBase, KnowledgeBaseGrant } from '@/lib/api/types';
 import { messageFor } from '@/lib/errors';
-import { ACCESS_LEVELS, atLeast, myLevelAfter } from '@/lib/knowledge/access';
+import { ACCESS_LEVELS, affectsOwnAccess, atLeast, myLevelAfter } from '@/lib/knowledge/access';
 import { apiKeyStatus } from '@/lib/workspace/status';
 import { useDebouncedValue } from '@/lib/hooks';
 import { apiKeysQuery, membersQuery, queryKeys, rolesQuery } from '@/lib/queries';
@@ -25,6 +25,7 @@ import { useCan, useWorkspace } from '@/features/workspaces/workspace-context';
 import { AccessLevelBadge } from '../shared/badges';
 import { ACCESS_LEVEL_META } from '../shared/meta';
 import { useKnowledgeAccess } from '../shared/use-knowledge-access';
+import { useRecheckOwnAccess } from './grant-helpers';
 import { useUpsertGrant } from './kb-mutations';
 
 type Tab = 'roles' | 'members' | 'keys';
@@ -38,11 +39,18 @@ interface Subject {
 
 const EXPLAIN: Readonly<Record<Tab, string>> = {
   roles: 'Everyone holding this role, now and later.',
-  members: 'Only this person, whatever their roles.',
+  members: 'Only this person, whatever their roles. Granted to their membership in this workspace.',
   keys: "Within its scopes, the key can list and read document details, upload, reindex and search. It can't read chunks or download, and never sees Restricted documents.",
 };
 
-/** "Add access" (§6.7): a subject from one of three lists, then a level. */
+/** The Phase 2 picker each tab needs; without it only that picker is unavailable (spec §2). */
+const PICKER_PERMISSION: Readonly<Record<Tab, { permission: string; noun: string }>> = {
+  roles: { permission: 'role:read', noun: 'a role' },
+  members: { permission: 'member:read', noun: 'a member' },
+  keys: { permission: 'apikey:read', noun: 'an API key' },
+};
+
+/** "Add access" (§5 "Access tab"): a subject from one of three lists, then a level. */
 export function AddAccessDialog({
   open,
   onOpenChange,
@@ -88,13 +96,16 @@ function Picker({
   const can = useCan();
   const access = useKnowledgeAccess();
   const upsert = useUpsertGrant(knowledgeBase.id);
+  const recheck = useRecheckOwnAccess(knowledgeBase);
 
-  const tabs: Array<{ value: Tab; label: string }> = [];
-  if (can('role:read')) tabs.push({ value: 'roles', label: 'Roles' });
-  if (can('member:read')) tabs.push({ value: 'members', label: 'Members' });
-  if (can('apikey:read')) tabs.push({ value: 'keys', label: 'API keys' });
+  const tabs: Array<{ value: Tab; label: string }> = [
+    { value: 'roles', label: 'Roles' },
+    { value: 'members', label: 'Members' },
+    { value: 'keys', label: 'API keys' },
+  ];
+  const usable = tabs.filter((candidate) => can(PICKER_PERMISSION[candidate.value].permission));
 
-  const [tab, setTab] = useState<Tab>(tabs[0]?.value ?? 'roles');
+  const [tab, setTab] = useState<Tab>(usable[0]?.value ?? 'roles');
   const [search, setSearch] = useState('');
   const [subject, setSubject] = useState<Subject | null>(null);
   const [level, setLevel] = useState<AccessLevel>('READ');
@@ -109,14 +120,13 @@ function Picker({
     setLevel(grantOf(next.type, next.id)?.accessLevel ?? 'READ');
   };
 
-  // The same self-lockout guard as the list, for your own member or role grant (§6.7).
+  // The same self-lockout guard as the list, for your own member or role grant. Only a
+  // restricted base can lock you out: an open one puts everyone at Manage.
+  const me = { membershipId: access.membershipId, roleIds: access.roleIds, isOwner: access.isOwner };
   const mine =
-    !!subject &&
-    ((subject.type === 'MEMBER' && subject.id === access.membershipId) || (subject.type === 'ROLE' && access.roleIds.includes(subject.id)));
+    !!subject && knowledgeBase.accessMode === 'RESTRICTED' && affectsOwnAccess({ subjectType: subject.type, subjectId: subject.id }, me);
   const levelAfter =
-    existing && mine && !access.isOwner
-      ? myLevelAfter(grants, { membershipId: access.membershipId, roleIds: access.roleIds }, { grantId: existing.id, accessLevel: level })
-      : 'MANAGE';
+    existing && mine ? myLevelAfter(grants, me, { grantId: existing.id, accessLevel: level }) : 'MANAGE';
   const losesManage = !atLeast(levelAfter, 'MANAGE');
 
   const submit = () => {
@@ -136,11 +146,18 @@ function Picker({
           onChanged();
           onBusyChange(false);
           onClose();
+          if (mine) void recheck();
         },
         onError: (err) => {
           onBusyChange(false);
+          if (isOutcomeUnknown(err)) {
+            // Never replayed: the list is re-read, so it shows whether the grant went through.
+            onChanged();
+            setError("No answer arrived, so the grant may have been made. The list behind this dialog has been re-read: check it before trying again.");
+            return;
+          }
           if (hasCode(err, 'RESOURCE_NOT_FOUND')) {
-            // The role, member or key is gone (§6.7): say so and refresh the list it came from.
+            // The role, member or key is gone (§5 "Access tab"): say so and refresh the list it came from.
             setError(err.message || messageFor(err));
             setSubject(null);
             void queryClient.invalidateQueries({ queryKey: queryKeys.roles(workspace.id) });
@@ -169,9 +186,9 @@ function Picker({
         description="Admit a role, a member or an API key. What they can do there still depends on their role permissions and clearance."
       />
       <DialogBody className="grid gap-4">
-        {tabs.length === 0 ? (
+        {usable.length === 0 ? (
           <Callout tone="neutral">
-            Your role can't list roles, members or API keys, so there's nobody to pick from. Ask an administrator.
+            Choosing who to admit needs role:read, member:read or apikey:read, and your role has none of them. Ask an administrator.
           </Callout>
         ) : (
           <>
@@ -206,7 +223,12 @@ function Picker({
             </div>
             <p className="-mt-1 text-xs text-muted">{EXPLAIN[tab]}</p>
             <div className="scrollbar-thin max-h-64 overflow-y-auto rounded-lg border border-line" role="listbox" aria-label="Choose who to admit">
-              {tab === 'roles' ? (
+              {!can(PICKER_PERMISSION[tab].permission) ? (
+                <ListEmpty>
+                  Choosing {PICKER_PERMISSION[tab].noun} needs <code className="font-mono text-[12px]">{PICKER_PERMISSION[tab].permission}</code>,
+                  which your role doesn't have.
+                </ListEmpty>
+              ) : tab === 'roles' ? (
                 <RoleList search={search} selected={subject} onChoose={choose} grantOf={grantOf} />
               ) : tab === 'members' ? (
                 <MemberList search={search} selected={subject} onChoose={choose} grantOf={grantOf} myMembershipId={access.membershipId} />
@@ -230,7 +252,10 @@ function Picker({
               options={ACCESS_LEVELS.map((value) => ({
                 value,
                 label: ACCESS_LEVEL_META[value].label,
-                description: ACCESS_LEVEL_META[value].description,
+                description:
+                  value === 'MANAGE'
+                    ? `${ACCESS_LEVEL_META[value].description} Managers can grant Manage to others too.`
+                    : ACCESS_LEVEL_META[value].description,
               }))}
             />
           </fieldset>
@@ -336,7 +361,7 @@ function KeyList({ search, selected, onChoose, grantOf }: ListProps) {
   if (keys.isPending) return <ListSkeleton />;
   if (keys.isError) return <ErrorState compact error={keys.error} onRetry={() => void keys.refetch()} retrying={keys.isFetching} />;
   const term = search.trim().toLowerCase();
-  // Active keys only: a revoked or expired key can't use a grant (§6.7).
+  // Active keys only: a revoked or expired key can't use a grant (§5 "Access tab").
   const shown = keys.data.filter(
     (key) => apiKeyStatus(key, keys.dataUpdatedAt) === 'active' && (!term || key.name.toLowerCase().includes(term) || key.prefix.toLowerCase().includes(term)),
   );

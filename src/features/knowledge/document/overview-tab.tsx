@@ -1,14 +1,19 @@
 import { useQuery } from '@tanstack/react-query';
 import {
   ChevronDown,
+  CloudOff,
   Download,
+  FileWarning,
+  HardDrive,
   Pencil,
   RotateCcw,
   RotateCw,
   ShieldCheck,
   ShieldHalf,
   Tag,
+  Timer,
   Trash2,
+  TriangleAlert,
 } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
@@ -25,11 +30,14 @@ import { isApiError } from '@/lib/api/errors';
 import type { DocumentProcessingMetrics, UpdateDocumentRequest, VaultDocument } from '@/lib/api/types';
 import { messageFor } from '@/lib/errors';
 import { formatBytes } from '@/lib/knowledge/files';
-import { displayStatus, failureHint, isInProgress } from '@/lib/knowledge/status';
-import { membersQuery, meQuery } from '@/lib/queries';
+import { canReindexNow, displayStatus, failureHint, isInProgress, type FailureKind } from '@/lib/knowledge/status';
+import { UPLOAD_DESCRIPTION_MAX, UPLOAD_TAG_MAX_LENGTH, UPLOAD_TAGS_MAX, UPLOAD_TITLE_MAX } from '@/lib/knowledge/upload';
+import { documentQuery, memberNamesQuery, meQuery } from '@/lib/queries';
 import { toast } from '@/lib/toast';
 import { cn, formatDateTime, pluralize } from '@/lib/utils';
 import { useCan, useWorkspace } from '@/features/workspaces/workspace-context';
+import { DocumentStatusBadge } from '../shared/badges';
+import { ProcessingNotice } from '../shared/processing-notice';
 import { useActionGate } from '../shared/use-action-gate';
 import { useDocumentContext } from './document-context';
 import { DeleteDocumentDialog, ReclassifyDialog } from './document-dialogs';
@@ -42,15 +50,25 @@ const TYPE_LABEL: Record<VaultDocument['fileType'], string> = {
   MARKDOWN: 'Markdown',
 };
 
-/** The drawer's Overview tab (§6.4). */
+const FAILURE_ICON: Readonly<Record<FailureKind, ReactNode>> = {
+  file: <FileWarning className="size-4" />,
+  service: <CloudOff className="size-4" />,
+  storage: <HardDrive className="size-4" />,
+  time: <Timer className="size-4" />,
+  unknown: <TriangleAlert className="size-4" />,
+};
+
+/** The drawer's Overview tab (spec §5 "Document detail"): status and versions, facts, actions. */
 export function DocumentOverviewTab() {
   const { document, knowledgeBase, close } = useDocumentContext();
+  const workspace = useWorkspace();
   const gate = useActionGate();
   const reindex = useReindexDocument();
   const downloads = useDownloadDocument();
   const deleteDialog = useDialogTarget<VaultDocument>();
   const reclassifyDialog = useDialogTarget<VaultDocument>();
   const [editing, setEditing] = useState(false);
+  const detail = useQuery({ ...documentQuery(workspace.id, document.id), enabled: false });
 
   const status = displayStatus(document);
   const failed = document.status === 'FAILED';
@@ -65,11 +83,18 @@ export function DocumentOverviewTab() {
 
   return (
     <>
-      {failed || status.retrying || status.previousVersionServing ? (
-        <div className="grid gap-2 border-b border-line px-5 py-4 sm:px-6">
+      {/* ── Status (spec §4.1–4.3) ── */}
+      <DrawerSection title="Status" description="The latest processing run, and what search serves meanwhile.">
+        <div className="grid grid-cols-1 gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <DocumentStatusBadge document={document} />
+            {status.stage ? <span className="text-[13px] text-muted">{status.stage}</span> : null}
+          </div>
+
           {failed ? (
             <Callout
-              tone="danger"
+              tone={status.previousVersionServing ? 'warning' : 'danger'}
+              icon={hint ? FAILURE_ICON[hint.kind] : undefined}
               title={status.previousVersionServing ? 'Reindex failed · previous version still searchable' : 'Processing failed'}
               action={
                 <RetryAction
@@ -81,14 +106,15 @@ export function DocumentOverviewTab() {
                 />
               }
             >
-              {/* Always the server's sentence (§4.1.2); the code only picks the hint. */}
+              {/* Always the server's sentence (§4.3); the code only picks the hint and icon. */}
               <p>{document.statusMessage ?? 'The document could not be processed.'}</p>
               {hint?.hint ? <p className="mt-1 opacity-90">{hint.hint}</p> : null}
+              {document.failureCode ? <p className="mt-1 font-mono text-[11px] opacity-70">{document.failureCode}</p> : null}
             </Callout>
           ) : null}
           {status.retrying ? (
             <Callout tone="warning" icon={<RotateCw className="size-4" />} title="Retrying">
-              {document.statusMessage}
+              {document.statusMessage} The server retries on its own with growing pauses; nothing needs doing yet.
             </Callout>
           ) : null}
           {status.previousVersionServing && processing ? (
@@ -96,10 +122,45 @@ export function DocumentOverviewTab() {
               Version {document.activeIndexVersion} keeps answering searches until version {document.indexVersion} is ready.
             </Callout>
           ) : null}
-        </div>
-      ) : null}
+          {processing ? (
+            <ProcessingNotice
+              queryKey={documentQuery(workspace.id, document.id).queryKey}
+              documents={[document]}
+              onRefresh={() => void detail.refetch()}
+              refreshing={detail.isFetching}
+            />
+          ) : null}
 
-      {/* ── Actions ── */}
+          <dl className="divide-y divide-line/70 rounded-lg border border-line px-3.5">
+            <DetailRow label="Searchable">
+              {document.isSearchable ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <ShieldCheck className="size-3.5 text-success-600" aria-hidden />
+                  Yes · version {document.activeIndexVersion}
+                </span>
+              ) : (
+                <Muted>{processing ? 'Not yet: the first run is in progress' : 'No'}</Muted>
+              )}
+            </DetailRow>
+            <DetailRow label="Processing run">
+              <span>
+                Version {document.indexVersion}
+                <Muted>{processing ? ' · in progress' : failed ? ' · failed' : ' · finished'}</Muted>
+              </span>
+            </DetailRow>
+            <DetailRow label="Last status change">
+              <span title={formatDateTime(document.lastStatusAt)}>
+                <RelativeTime value={document.lastStatusAt} />
+              </span>
+            </DetailRow>
+            <DetailRow label="Processed">
+              {document.processingCompletedAt ? formatDateTime(document.processingCompletedAt) : <Muted>{processing ? 'In progress' : '—'}</Muted>}
+            </DetailRow>
+          </dl>
+        </div>
+      </DrawerSection>
+
+      {/* ── Actions (gated per spec §3.5) ── */}
       <div className="flex flex-wrap gap-2 border-b border-line px-5 py-3.5 sm:px-6">
         {edit.visible ? (
           <GatedButton reason={edit.reason} icon={<Pencil />} label="Edit details" onClick={() => setEditing(true)} disabled={editing} />
@@ -109,11 +170,11 @@ export function DocumentOverviewTab() {
         ) : null}
         {reindexGate.visible && !failed ? (
           <GatedButton
-            reason={reindexGate.reason ?? (processing ? 'Already being processed' : null)}
+            reason={reindexGate.reason ?? (canReindexNow(document) ? null : 'Already being processed')}
             icon={<RotateCw />}
             label="Reindex"
             loading={reindexing}
-            tooltip="Re-run text extraction and embedding. The current version keeps answering searches until the new one is ready."
+            tooltip="Re-run extraction, chunking and embedding. The current version keeps answering searches until the new one is ready."
             onClick={() => reindex.mutate(document)}
           />
         ) : null}
@@ -121,9 +182,9 @@ export function DocumentOverviewTab() {
           <GatedButton
             reason={download.reason}
             icon={<Download />}
-            label={downloads.isPending(document.id) ? 'Downloading…' : 'Download'}
+            label={downloads.isPending(document.id) ? 'Downloading…' : 'Download original'}
             loading={downloads.isPending(document.id)}
-            tooltip="Every download is recorded in the audit log."
+            tooltip="The original file, byte for byte. Every download is recorded in the audit log."
             onClick={() => void downloads.download(document)}
           />
         ) : null}
@@ -142,12 +203,14 @@ export function DocumentOverviewTab() {
           </DetailRow>
           <DetailRow label="Type">
             {TYPE_LABEL[document.fileType] ?? document.fileType}{' '}
-            <span className="font-mono text-[11.5px] font-normal text-muted">{document.mimeType}</span>
+            <span className="font-mono text-[11.5px] font-normal text-muted" title="Detected from the file's contents">
+              {document.mimeType}
+            </span>
           </DetailRow>
           <DetailRow label="Size">
             <span className="font-mono tabular">{formatBytes(document.sizeBytes)}</span>
           </DetailRow>
-          <DetailRow label="Pages">{document.pageCount ?? <Muted>—</Muted>}</DetailRow>
+          <DetailRow label="Pages">{document.pageCount ?? <Muted>{document.fileType === 'PDF' ? '—' : 'Not paged'}</Muted>}</DetailRow>
           <DetailRow label="Language">{document.language ? document.language.toUpperCase() : <Muted>Not detected yet</Muted>}</DetailRow>
           <DetailRow label="Chunks">
             {document.isSearchable || document.chunkCount > 0 ? (
@@ -162,25 +225,12 @@ export function DocumentOverviewTab() {
           <DetailRow label="Embedding model">
             {document.embeddingModel ? <span className="font-mono text-[12px]">{document.embeddingModel}</span> : <Muted>—</Muted>}
           </DetailRow>
-          <DetailRow label="Search version">
-            {document.activeIndexVersion === null ? (
-              <Muted>Not searchable yet</Muted>
-            ) : (
-              <span>
-                v{document.activeIndexVersion}
-                {document.indexVersion !== document.activeIndexVersion ? <Muted> · v{document.indexVersion} in progress</Muted> : null}
-              </span>
-            )}
-          </DetailRow>
           <DetailRow label="Uploaded by">
             <UploadedBy userId={document.uploadedById} />
           </DetailRow>
           <DetailRow label="Added">{formatDateTime(document.createdAt)}</DetailRow>
           <DetailRow label="Last change">
             <RelativeTime value={document.updatedAt} />
-          </DetailRow>
-          <DetailRow label="Processed">
-            {document.processingCompletedAt ? formatDateTime(document.processingCompletedAt) : <Muted>{processing ? 'In progress' : '—'}</Muted>}
           </DetailRow>
         </dl>
       </DrawerSection>
@@ -254,7 +304,7 @@ function GatedButton({
   return (
     <Tooltip content={content} disabled={!content}>
       <span tabIndex={reason ? 0 : -1} className="inline-flex rounded-lg">
-        <Button variant={variant} size="sm" onClick={onClick} disabled={!!reason || disabled} loading={loading}>
+        <Button variant={variant} size="sm" onClick={onClick} disabled={!!reason || disabled || loading} loading={loading}>
           {loading ? null : icon}
           {label}
         </Button>
@@ -263,7 +313,7 @@ function GatedButton({
   );
 }
 
-/** §6.4 Retry: offered where it can help; otherwise says what to do instead. */
+/** Retry (P3-API-15): offered where it can help; otherwise "Retry anyway" with the reason. */
 function RetryAction({
   visible,
   reason,
@@ -278,7 +328,7 @@ function RetryAction({
   onRetry: () => void;
 }) {
   if (!visible) {
-    // The HR Manager's case: they can see it failed but not reindex.
+    // They can see it failed but not reindex (e.g. a Viewer).
     return <p className="text-[12.5px] opacity-90">Ask someone who can reindex documents to retry it.</p>;
   }
   if (!retryHelps) {
@@ -286,9 +336,9 @@ function RetryAction({
       <div className="flex flex-wrap items-center gap-2">
         <Tooltip content={reason ?? 'The file itself is the problem, so this will probably fail again.'}>
           <span tabIndex={0} className="inline-flex rounded-lg">
-            <Button size="xs" variant="secondary" onClick={onRetry} disabled={!!reason} loading={pending}>
+            <Button size="xs" variant="secondary" onClick={onRetry} disabled={!!reason || pending} loading={pending}>
               {pending ? null : <RotateCcw />}
-              Retry anyway
+              Try again anyway
             </Button>
           </span>
         </Tooltip>
@@ -299,7 +349,7 @@ function RetryAction({
   return (
     <Tooltip content={reason} disabled={!reason}>
       <span tabIndex={reason ? 0 : -1} className="inline-flex rounded-lg">
-        <Button size="xs" variant="secondary" onClick={onRetry} disabled={!!reason} loading={pending}>
+        <Button size="xs" variant="secondary" onClick={onRetry} disabled={!!reason || pending} loading={pending}>
           {pending ? null : <RotateCcw />}
           Retry
         </Button>
@@ -308,46 +358,60 @@ function RetryAction({
   );
 }
 
-/** `uploadedById` is a user id: match it to a member's userId (§6.4). */
+/**
+ * `uploadedById` is a user id: the uploader's name isn't returned (spec §6), so it
+ * is resolved through the member directory, removed members included, where you
+ * may read it.
+ */
 function UploadedBy({ userId }: { userId: string | null }) {
   const workspace = useWorkspace();
   const can = useCan();
   const { data: me } = useQuery(meQuery);
-  const members = useQuery({ ...membersQuery(workspace.id, { limit: 100 }), enabled: !!userId && userId !== me?.id && can('member:read') });
+  const names = useQuery({ ...memberNamesQuery(workspace.id), enabled: !!userId && userId !== me?.id && can('member:read') });
 
   if (!userId) return <Muted>An API key, or an account that was erased</Muted>;
   if (userId === me?.id) return <>You</>;
   if (!can('member:read')) return <Muted>Another member</Muted>;
-  if (!members.data) return <Muted>…</Muted>;
-  const member = members.data.items.find((candidate) => candidate.userId === userId);
-  if (member) return <>{member.displayName}</>;
-  return <Muted>{members.data.pagination.hasNextPage ? 'A workspace member' : 'Former member'}</Muted>;
+  if (names.isPending) return <Muted>…</Muted>;
+  const entry = names.data?.get(userId);
+  if (!entry) return <Muted>Unknown member</Muted>;
+  return (
+    <>
+      {entry.name}
+      {entry.removed ? <Muted> · no longer a member</Muted> : null}
+    </>
+  );
 }
 
-// ── Editing (E73) ───────────────────────────────────────────────────────────
-
-const TITLE_MAX = 255;
-const DESCRIPTION_MAX = 2000;
+// ── Editing (P3-API-14) ─────────────────────────────────────────────────────
 
 function EditForm({ document, onDone, onGone }: { document: VaultDocument; onDone: () => void; onGone: () => void }) {
   const update = useUpdateDocument(document.id);
+  const [baseline] = useState(document);
   const [title, setTitle] = useState(document.title);
   const [description, setDescription] = useState(document.description ?? '');
   const [tags, setTags] = useState<string[]>(document.tags);
   const [errors, setErrors] = useState<{ title?: string; description?: string; tags?: string; form?: string }>({});
 
-  const sameTags = tags.length === document.tags.length && tags.every((tag, index) => tag === document.tags[index]);
+  // Only what this form changed, relative to the copy it opened with (spec §9.4).
+  const sameTags = tags.length === baseline.tags.length && tags.every((tag, index) => tag === baseline.tags[index]);
   const body: UpdateDocumentRequest = {};
-  if (title.trim() !== document.title) body.title = title.trim();
-  if (description.trim() !== (document.description ?? '')) body.description = description.trim() || null;
+  if (title.trim() !== baseline.title) body.title = title.trim();
+  if (description.trim() !== (baseline.description ?? '')) body.description = description.trim() || null;
   if (!sameTags) body.tags = tags;
   const dirty = Object.keys(body).length > 0;
+  // Someone else saved while this form was open.
+  const changedElsewhere =
+    dirty &&
+    (document.title !== baseline.title ||
+      document.description !== baseline.description ||
+      document.tags.join('\u0000') !== baseline.tags.join('\u0000'));
 
   const submit = () => {
     const problems: typeof errors = {};
     if (!title.trim()) problems.title = 'Give the document a title.';
-    else if (title.trim().length > TITLE_MAX) problems.title = `Use no more than ${TITLE_MAX} characters.`;
-    if (description.length > DESCRIPTION_MAX) problems.description = `Use no more than ${DESCRIPTION_MAX} characters.`;
+    else if (title.trim().length > UPLOAD_TITLE_MAX) problems.title = `Use no more than ${UPLOAD_TITLE_MAX} characters.`;
+    if (description.length > UPLOAD_DESCRIPTION_MAX) problems.description = `Use no more than ${UPLOAD_DESCRIPTION_MAX} characters.`;
     setErrors(problems);
     if (Object.keys(problems).length) return;
     if (!dirty) return onDone();
@@ -378,24 +442,34 @@ function EditForm({ document, onDone, onGone }: { document: VaultDocument; onDon
         submit();
       }}
     >
+      {changedElsewhere ? (
+        <Callout tone="warning" title="This document changed while you were editing">
+          Saving sends only the fields you changed; the rest keeps the newer values.
+        </Callout>
+      ) : null}
       <Field label="Title" error={errors.title}>
-        <Input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} maxLength={TITLE_MAX + 20} />
+        <Input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} maxLength={UPLOAD_TITLE_MAX + 20} />
       </Field>
       <Field
         label="Description"
         optional
         error={errors.description}
-        hint={<span className="tabular">{description.length}/{DESCRIPTION_MAX} · Leave empty to remove it.</span>}
+        hint={<span className="tabular">{description.length}/{UPLOAD_DESCRIPTION_MAX} · Leave empty to remove it.</span>}
       >
         <Textarea rows={3} value={description} onChange={(event) => setDescription(event.target.value)} />
       </Field>
-      <Field label="Tags" optional error={errors.tags} hint="Up to 20 tags of 40 characters. Saving replaces the tags.">
+      <Field
+        label="Tags"
+        optional
+        error={errors.tags}
+        hint={`Up to ${UPLOAD_TAGS_MAX} tags of ${UPLOAD_TAG_MAX_LENGTH} characters, stored in lower case. Saving replaces the tags; removing them all clears them.`}
+      >
         <TagInput
           value={tags}
           onChange={setTags}
-          max={20}
+          max={UPLOAD_TAGS_MAX}
           normalize={(entry) => entry.trim().toLowerCase()}
-          validate={(entry) => (entry.length > 40 ? 'Tags are at most 40 characters.' : null)}
+          validate={(entry) => (entry.length > UPLOAD_TAG_MAX_LENGTH ? `Tags are at most ${UPLOAD_TAG_MAX_LENGTH} characters.` : null)}
           placeholder="Add a tag"
         />
       </Field>
@@ -412,9 +486,9 @@ function EditForm({ document, onDone, onGone }: { document: VaultDocument; onDon
   );
 }
 
-// ── Processing metrics ──────────────────────────────────────────────────────
+// ── Processing metrics (keys are open, spec §5) ─────────────────────────────
 
-const SEGMENTS: ReadonlyArray<{ key: keyof DocumentProcessingMetrics; label: string; color: string }> = [
+const KNOWN_SEGMENTS: ReadonlyArray<{ key: string; label: string; color: string }> = [
   { key: 'queueWaitMs', label: 'Queue', color: 'bg-line-strong' },
   { key: 'downloadMs', label: 'Download', color: 'bg-[#c9b48a]' },
   { key: 'parseMs', label: 'Text extraction', color: 'bg-info-500' },
@@ -422,6 +496,7 @@ const SEGMENTS: ReadonlyArray<{ key: keyof DocumentProcessingMetrics; label: str
   { key: 'embedMs', label: 'Embedding', color: 'bg-brand-500' },
   { key: 'indexMs', label: 'Indexing', color: 'bg-warning-500' },
 ];
+const KNOWN_KEYS = new Set(['totalMs', 'attempts', 'embeddingTokens', ...KNOWN_SEGMENTS.map((segment) => segment.key)]);
 
 function formatMs(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)} ms`;
@@ -430,62 +505,73 @@ function formatMs(ms: number): string {
   return `${minutes} min ${Math.round((ms % 60_000) / 1000)} s`;
 }
 
+/** "chunkTokensMax" → "Chunk tokens max"; a duration when the key ends in Ms. */
+function humanizeMetric(key: string): string {
+  const words = key.replace(/Ms$/, '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 function ProcessingSection({ metrics }: { metrics: DocumentProcessingMetrics }) {
   const [open, setOpen] = useState(false);
-  const present = SEGMENTS.filter((segment) => typeof metrics[segment.key] === 'number');
-  const sum = present.reduce((total, segment) => total + (metrics[segment.key] ?? 0), 0);
-  const total = metrics.totalMs ?? sum;
-  if (present.length === 0 && metrics.attempts === undefined) return null;
+  const values = Object.entries(metrics ?? {}).filter((entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1]));
+  const value = (key: string) => values.find(([name]) => name === key)?.[1];
+  const present = KNOWN_SEGMENTS.filter((segment) => value(segment.key) !== undefined);
+  const sum = present.reduce((total, segment) => total + (value(segment.key) ?? 0), 0);
+  const total = value('totalMs') ?? sum;
+  const attempts = value('attempts');
+  const others = values.filter(([key]) => !KNOWN_KEYS.has(key));
+  if (values.length === 0) return null;
 
   return (
     <section className="border-b border-line px-5 py-5 last:border-b-0 sm:px-6">
       <button
         type="button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => setOpen((current) => !current)}
         aria-expanded={open}
         className="flex w-full items-center justify-between gap-3 rounded-md text-left"
       >
         <span>
-          <span className="block text-[13.5px] font-semibold text-ink">Processing</span>
+          <span className="block text-[13.5px] font-semibold text-ink">Timings</span>
           <span className="mt-0.5 block text-[13px] text-muted">
             {total ? `${formatMs(total)} in total` : 'Timings of the last run'}
-            {metrics.attempts ? ` · ${pluralize(metrics.attempts, 'attempt')}` : null}
+            {attempts ? ` · ${pluralize(attempts, 'attempt')}` : null}
           </span>
         </span>
-        <ChevronDown className={cn('size-4 shrink-0 text-faint transition-transform', open && 'rotate-180')} aria-hidden />
+        <ChevronDown className={cn('size-4 shrink-0 text-faint transition-transform motion-reduce:transition-none', open && 'rotate-180')} aria-hidden />
       </button>
       {present.length && sum > 0 ? (
         <div className="mt-3 flex h-2 overflow-hidden rounded-full bg-well-strong" aria-hidden>
           {present.map((segment) => (
-            <span key={segment.key} className={segment.color} style={{ width: `${((metrics[segment.key] ?? 0) / sum) * 100}%` }} />
+            <span key={segment.key} className={segment.color} style={{ width: `${((value(segment.key) ?? 0) / sum) * 100}%` }} />
           ))}
         </div>
       ) : null}
       {open ? (
         <dl className="mt-3 grid gap-1.5 text-[12.5px] sm:grid-cols-2">
           {present.map((segment) => (
-            <div key={segment.key} className="flex items-center justify-between gap-3 rounded-md bg-well/50 px-2.5 py-1.5">
-              <dt className="flex items-center gap-2 text-muted">
-                <span className={cn('size-2 rounded-sm', segment.color)} aria-hidden />
-                {segment.label}
-              </dt>
-              <dd className="font-mono text-ink-soft tabular">{formatMs(metrics[segment.key] ?? 0)}</dd>
-            </div>
+            <MetricRow key={segment.key} label={segment.label} value={formatMs(value(segment.key) ?? 0)} swatch={segment.color} />
           ))}
-          {metrics.embeddingTokens !== undefined ? (
-            <div className="flex items-center justify-between gap-3 rounded-md bg-well/50 px-2.5 py-1.5">
-              <dt className="text-muted">Embedding tokens</dt>
-              <dd className="font-mono text-ink-soft tabular">{metrics.embeddingTokens.toLocaleString()}</dd>
-            </div>
+          {value('embeddingTokens') !== undefined ? (
+            <MetricRow label="Embedding tokens" value={(value('embeddingTokens') ?? 0).toLocaleString()} />
           ) : null}
-          {metrics.attempts !== undefined ? (
-            <div className="flex items-center justify-between gap-3 rounded-md bg-well/50 px-2.5 py-1.5">
-              <dt className="text-muted">Attempts</dt>
-              <dd className="font-mono text-ink-soft tabular">{metrics.attempts}</dd>
-            </div>
-          ) : null}
+          {attempts !== undefined ? <MetricRow label="Attempts" value={String(attempts)} /> : null}
+          {others.map(([key, metric]) => (
+            <MetricRow key={key} label={humanizeMetric(key)} value={key.endsWith('Ms') ? formatMs(metric) : metric.toLocaleString()} />
+          ))}
         </dl>
       ) : null}
     </section>
+  );
+}
+
+function MetricRow({ label, value, swatch }: { label: string; value: string; swatch?: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md bg-well/50 px-2.5 py-1.5">
+      <dt className="flex items-center gap-2 text-muted">
+        {swatch ? <span className={cn('size-2 rounded-sm', swatch)} aria-hidden /> : null}
+        {label}
+      </dt>
+      <dd className="font-mono text-ink-soft tabular">{value}</dd>
+    </div>
   );
 }

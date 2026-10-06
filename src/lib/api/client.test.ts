@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { apiEvents, call } from './client';
+import { apiEvents, call, parseResponseHeaders, request } from './client';
 
 function answerWith(code: string, status = 403) {
   vi.stubGlobal(
@@ -49,5 +49,41 @@ describe('localCodes', () => {
     ).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
     expect(seen).toEqual(['PERMISSION_DENIED']);
     off();
+  });
+});
+
+describe('multipart and raw transports (Phase 3 spec §2)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('lets the browser set the multipart boundary', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ success: true, data: { id: 'doc' }, meta: { requestId: 'r', timestamp: 't' } }), {
+          status: 202,
+          headers: { 'content-type': 'application/json', 'x-ratelimit-remaining': '99' },
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const form = new FormData();
+    form.append('classification', 'INTERNAL');
+    const result = await request<{ id: string }>('/organizations/w/knowledge-bases/k/documents', {
+      auth: false,
+      workspaceId: 'w',
+      method: 'POST',
+      body: form,
+    });
+    const init = (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1];
+    expect(init.body).toBe(form);
+    expect((init.headers as Record<string, string>)['Content-Type']).toBeUndefined();
+    expect((init.headers as Record<string, string>)['X-Organization-Id']).toBe('w');
+    expect(result.data.id).toBe('doc');
+    expect(result.rateLimit?.remaining).toBe(99);
+  });
+
+  it('parses the headers of an XMLHttpRequest answer', () => {
+    const headers = parseResponseHeaders('X-Request-Id: abc\r\nx-ratelimit-reset: 1700000000\r\ncontent-disposition: attachment; filename="a.pdf"\r\n');
+    expect(headers.get('x-request-id')).toBe('abc');
+    expect(headers.get('X-RateLimit-Reset')).toBe('1700000000');
+    expect(headers.get('content-disposition')).toContain('a.pdf');
   });
 });

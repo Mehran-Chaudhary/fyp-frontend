@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { KeyRound, KeySquare, Lock, ShieldAlert, ShieldCheck, UserPlus, UserRound, Users, X } from 'lucide-react';
+import { Info, KeyRound, KeySquare, Lock, ShieldAlert, ShieldCheck, UserPlus, UserRound, X } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { NoAccessState } from '@/components/feedback/no-access';
@@ -13,22 +13,24 @@ import { RelativeTime } from '@/components/ui/relative-time';
 import { Select } from '@/components/ui/select';
 import { Table, TableMessage, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { Tooltip } from '@/components/ui/tooltip';
-import { hasCode } from '@/lib/api/errors';
+import { hasCode, isOutcomeUnknown } from '@/lib/api/errors';
 import type { AccessLevel, KnowledgeBase, KnowledgeBaseGrant } from '@/lib/api/types';
 import { messageFor } from '@/lib/errors';
-import { ACCESS_LEVELS, atLeast, myLevelAfter } from '@/lib/knowledge/access';
+import { ACCESS_LEVELS, affectsOwnAccess, atLeast, myLevelAfter } from '@/lib/knowledge/access';
 import { knowledgeBaseGrantsQuery, queryKeys } from '@/lib/queries';
 import { queryClient } from '@/lib/query-client';
 import { toast, toastError } from '@/lib/toast';
+import { formatDateTime } from '@/lib/utils';
 import { useWorkspace } from '@/features/workspaces/workspace-context';
 import { AccessLevelBadge } from '../shared/badges';
 import { ACCESS_LEVEL_META } from '../shared/meta';
 import { useKnowledgeAccess } from '../shared/use-knowledge-access';
 import { AddAccessDialog } from './add-access-dialog';
+import { grantLabel, useRecheckOwnAccess } from './grant-helpers';
 import { useKnowledgeBaseContext } from './kb-context';
 import { useRevokeGrant, useUpsertGrant } from './kb-mutations';
 
-/** The Access tab (§6.7): who, besides the owner, can see a restricted knowledge base. */
+/** The Access tab (spec §5 "Access tab", P3-API-06/07/08): who, besides the owner, can see a restricted base. */
 export function KnowledgeBaseAccessTab() {
   const { knowledgeBase } = useKnowledgeBaseContext();
   const workspace = useWorkspace();
@@ -41,34 +43,13 @@ export function KnowledgeBaseAccessTab() {
       </Card>
     );
   }
-  if (knowledgeBase.accessMode === 'WORKSPACE') {
-    return (
-      <Card>
-        <EmptyState
-          icon={<Users />}
-          title="Open to the whole workspace"
-          description="This knowledge base is open to everyone with document permissions. Switch it to Restricted to control access by grant."
-          action={
-            access.can('editKnowledgeBase', knowledgeBase) ? (
-              <Button asChild variant="secondary" size="sm">
-                <Link to={`/w/${workspace.slug}/knowledge-bases/${knowledgeBase.id}`}>
-                  <Lock />
-                  Change access in Settings
-                </Link>
-              </Button>
-            ) : null
-          }
-        />
-      </Card>
-    );
-  }
   if (!access.can('viewGrants', knowledgeBase)) {
     return (
       <Card>
         <EmptyState
           icon={<ShieldCheck />}
           title="Only its managers can see who has access"
-          description={`You have ${ACCESS_LEVEL_META[knowledgeBase.access].label} access to ${knowledgeBase.name}.`}
+          description={`You have ${ACCESS_LEVEL_META[knowledgeBase.access].label} access to ${knowledgeBase.name}. Seeing and changing its grants needs Manage.`}
         />
       </Card>
     );
@@ -87,26 +68,29 @@ function Grants({ knowledgeBase }: { knowledgeBase: KnowledgeBase }) {
   const grants = useQuery(knowledgeBaseGrantsQuery(workspace.id, knowledgeBase.id));
   const upsert = useUpsertGrant(knowledgeBase.id);
   const revoke = useRevokeGrant(knowledgeBase.id);
+  const recheck = useRecheckOwnAccess(knowledgeBase);
   const canManage = access.can('manageGrants', knowledgeBase);
+  const restricted = knowledgeBase.accessMode === 'RESTRICTED';
   const [adding, setAdding] = useState(false);
   const [pending, setPending] = useState<Pending | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const me = { membershipId: access.membershipId, roleIds: access.roleIds };
-  const isMine = (grant: KnowledgeBaseGrant) =>
-    (grant.subjectType === 'MEMBER' && grant.subjectId === me.membershipId) || (grant.subjectType === 'ROLE' && me.roleIds.includes(grant.subjectId));
+  const me = { membershipId: access.membershipId, roleIds: access.roleIds, isOwner: access.isOwner };
+  const isMine = (grant: KnowledgeBaseGrant) => affectsOwnAccess(grant, { ...me, isOwner: false });
+  // Only a restricted base can lock you out: an open one puts everyone at Manage (spec §3.2).
+  const guards = (grant: KnowledgeBaseGrant) => restricted && affectsOwnAccess(grant, me);
   const list = grants.data ?? [];
 
-  /** §6.7's refusals; some mean the page itself is stale. */
+  /** The refusals of spec §8 P3-API-06/07/08; some mean this page is stale. */
   const handle = (err: unknown, fallbackTitle: string) => {
     if (hasCode(err, 'KNOWLEDGE_BASE_NOT_FOUND')) {
-      toast.info("You no longer have access to this knowledge base");
+      toast.info(`${knowledgeBase.name} doesn't exist or you don't have access to it any more`);
       void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBases(workspace.id) });
       void navigate(`/w/${workspace.slug}/knowledge-bases`);
       return;
     }
     if (hasCode(err, 'KNOWLEDGE_BASE_ACCESS_DENIED')) {
-      toast.info("You're no longer a manager of this knowledge base", { description: 'The page has been refreshed.' });
+      toast.info(`You're no longer a manager of ${knowledgeBase.name}`, { description: 'The page has been refreshed.' });
       void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBaseDetail(workspace.id, knowledgeBase.id) });
       return;
     }
@@ -114,84 +98,109 @@ function Grants({ knowledgeBase }: { knowledgeBase: KnowledgeBase }) {
       toast.info('That access was already removed', { description: 'The list has been refreshed.' });
       return;
     }
+    if (isOutcomeUnknown(err)) {
+      // Never replayed (spec §2): the list was re-read, so it shows what really happened.
+      toast.warning("We couldn't confirm the change", { description: 'The list has been re-read. Check it before trying again.' });
+      return;
+    }
     toastError(err, fallbackTitle);
   };
 
+  const applyLevel = (grant: KnowledgeBaseGrant, level: AccessLevel, done?: () => void) =>
+    upsert.mutate(
+      { subjectType: grant.subjectType, subjectId: grant.subjectId, accessLevel: level },
+      {
+        onSuccess: () => {
+          toast.success(`${grantLabel(grant)} now has ${ACCESS_LEVEL_META[level].label} access`);
+          done?.();
+          if (guards(grant)) void recheck();
+        },
+        onError: (err) => {
+          if (done && !hasCode(err, 'KNOWLEDGE_BASE_NOT_FOUND', 'KNOWLEDGE_BASE_ACCESS_DENIED') && !isOutcomeUnknown(err)) {
+            setError(messageFor(err));
+            return;
+          }
+          done?.();
+          handle(err, "Couldn't change the access");
+        },
+      },
+    );
+
   const setLevel = (grant: KnowledgeBaseGrant, level: AccessLevel) => {
     if (level === grant.accessLevel) return;
-    // §6.7 self-lockout guard: owners bypass compartments and never lose access.
-    const after = access.isOwner ? 'MANAGE' : myLevelAfter(list, me, { grantId: grant.id, accessLevel: level });
-    if (!access.isOwner && isMine(grant) && !atLeast(after, 'MANAGE')) {
+    // Self-lockout guard (spec §5, P3-G07): warn before lowering your own access below Manage.
+    const after = myLevelAfter(list, me, { grantId: grant.id, accessLevel: level });
+    if (guards(grant) && !atLeast(after, 'MANAGE')) {
       setError(null);
       setPending({ kind: 'lower', grant, level, after });
       return;
     }
-    upsert.mutate(
-      { subjectType: grant.subjectType, subjectId: grant.subjectId, accessLevel: level },
-      {
-        onSuccess: () => toast.success(`${label(grant)} now has ${ACCESS_LEVEL_META[level].label} access`),
-        onError: (err) => handle(err, "Couldn't change the access"),
-      },
-    );
+    applyLevel(grant, level);
   };
 
   const askRemove = (grant: KnowledgeBaseGrant) => {
-    const after = access.isOwner ? 'MANAGE' : myLevelAfter(list, me, { removeGrantId: grant.id });
     setError(null);
-    setPending({ kind: 'remove', grant, after: isMine(grant) ? after : 'MANAGE' });
+    setPending({ kind: 'remove', grant, after: guards(grant) ? myLevelAfter(list, me, { removeGrantId: grant.id }) : 'MANAGE' });
   };
 
   const confirm = () => {
     if (!pending) return;
     const done = () => setPending(null);
-    if (pending.kind === 'remove') {
-      revoke.mutate(pending.grant.id, {
-        onSuccess: () => {
-          toast.success(`Removed ${label(pending.grant)}'s access`);
-          done();
-        },
-        onError: (err) => {
-          if (hasCode(err, 'KNOWLEDGE_BASE_GRANT_NOT_FOUND', 'KNOWLEDGE_BASE_NOT_FOUND', 'KNOWLEDGE_BASE_ACCESS_DENIED')) {
-            done();
-            handle(err, "Couldn't remove the access");
-            return;
-          }
-          setError(messageFor(err));
-        },
-      });
-    } else {
-      const { grant, level } = pending;
-      upsert.mutate(
-        { subjectType: grant.subjectType, subjectId: grant.subjectId, accessLevel: level },
-        {
-          onSuccess: () => {
-            toast.success(`${label(grant)} now has ${ACCESS_LEVEL_META[level].label} access`);
-            done();
-          },
-          onError: (err) => {
-            if (hasCode(err, 'KNOWLEDGE_BASE_NOT_FOUND', 'KNOWLEDGE_BASE_ACCESS_DENIED')) {
-              done();
-              handle(err, "Couldn't change the access");
-              return;
-            }
-            setError(messageFor(err));
-          },
-        },
-      );
+    if (pending.kind === 'lower') {
+      applyLevel(pending.grant, pending.level, done);
+      return;
     }
+    const grant = pending.grant;
+    revoke.mutate(grant.id, {
+      onSuccess: () => {
+        toast.success(`Removed ${grantLabel(grant)}'s access`);
+        done();
+        if (guards(grant)) void recheck();
+      },
+      onError: (err) => {
+        if (hasCode(err, 'KNOWLEDGE_BASE_GRANT_NOT_FOUND', 'KNOWLEDGE_BASE_NOT_FOUND', 'KNOWLEDGE_BASE_ACCESS_DENIED') || isOutcomeUnknown(err)) {
+          done();
+          handle(err, "Couldn't remove the access");
+          return;
+        }
+        setError(messageFor(err));
+      },
+    });
   };
 
   const lockout = pending && pending.after !== 'MANAGE' ? lockoutWarning(knowledgeBase.name, pending.after) : null;
 
   return (
     <>
+      {!restricted ? (
+        <Callout
+          tone="info"
+          icon={<Info className="size-4" />}
+          title="Grants take effect only while this base is Restricted"
+          action={
+            access.can('editKnowledgeBase', knowledgeBase) ? (
+              <Button asChild variant="secondary" size="xs">
+                <Link to={`/w/${workspace.slug}/knowledge-bases/${knowledgeBase.id}`}>
+                  <Lock />
+                  Change access mode
+                </Link>
+              </Button>
+            ) : null
+          }
+        >
+          {knowledgeBase.name} is open to everyone with document permissions, at Manage level. Grants added here are kept, and apply as
+          soon as it's switched to Restricted, so you can prepare them in advance.
+        </Callout>
+      ) : null}
+
       <Card className="overflow-hidden">
         <CardHeader
           icon={<ShieldCheck />}
           title="Who can access this knowledge base"
           description={
             <>
-              Grants admit roles, members or API keys at a level. Role permissions still decide what each of them may do.
+              Grants admit roles, members or API keys at a level: Read, Write or Manage. Role permissions still decide what each of them
+              may do, and clearance decides which documents they see.
               {access.isOwner ? ' As the owner, you see every knowledge base without a grant.' : null}
             </>
           }
@@ -243,7 +252,11 @@ function Grants({ knowledgeBase }: { knowledgeBase: KnowledgeBase }) {
                 <EmptyState
                   icon={<Lock />}
                   title="Nobody has been granted access"
-                  description="Only the workspace owner can see this knowledge base until someone is granted access."
+                  description={
+                    restricted
+                      ? 'Only the workspace owner can see this knowledge base until someone is granted access.'
+                      : 'Add grants now if you plan to restrict this knowledge base later.'
+                  }
                   action={
                     canManage ? (
                       <Button size="sm" onClick={() => setAdding(true)}>
@@ -264,7 +277,7 @@ function Grants({ knowledgeBase }: { knowledgeBase: KnowledgeBase }) {
                     {canManage ? (
                       <Select
                         size="sm"
-                        aria-label={`Access level for ${label(grant)}`}
+                        aria-label={`Access level for ${grantLabel(grant)}`}
                         value={grant.accessLevel}
                         onValueChange={(level) => setLevel(grant, level)}
                         disabled={upsert.isPending && upsert.variables?.subjectId === grant.subjectId}
@@ -281,7 +294,9 @@ function Grants({ knowledgeBase }: { knowledgeBase: KnowledgeBase }) {
                     )}
                   </TD>
                   <TD className="hidden text-muted md:table-cell">
-                    <RelativeTime value={grant.createdAt} />
+                    <span title={formatDateTime(grant.createdAt)}>
+                      <RelativeTime value={grant.createdAt} />
+                    </span>
                   </TD>
                   <TD className="text-right">
                     {canManage ? (
@@ -291,7 +306,7 @@ function Grants({ knowledgeBase }: { knowledgeBase: KnowledgeBase }) {
                           size="icon-sm"
                           className="text-faint hover:text-danger-600"
                           onClick={() => askRemove(grant)}
-                          aria-label={`Remove ${label(grant)}'s access`}
+                          aria-label={`Remove ${grantLabel(grant)}'s access`}
                         >
                           <X />
                         </Button>
@@ -305,6 +320,7 @@ function Grants({ knowledgeBase }: { knowledgeBase: KnowledgeBase }) {
         </Table>
         <p className="border-t border-line px-5 py-2.5 text-xs text-muted sm:px-6">
           Changes take effect on the next request. A grant whose role, member or key is gone stops working and leaves this list.
+          {canManage ? ' Anyone with Manage can grant Manage, including to others.' : null}
         </p>
       </Card>
 
@@ -326,12 +342,14 @@ function Grants({ knowledgeBase }: { knowledgeBase: KnowledgeBase }) {
         size="md"
         title={
           pending?.kind === 'lower'
-            ? `Lower ${label(pending.grant)} to ${ACCESS_LEVEL_META[pending.level].label}?`
-            : `Remove ${pending ? label(pending.grant) : ''}'s access?`
+            ? `Lower ${grantLabel(pending.grant)} to ${ACCESS_LEVEL_META[pending.level].label}?`
+            : `Remove ${pending ? grantLabel(pending.grant) : ''}'s access?`
         }
         description={
           pending?.kind === 'remove'
-            ? `${label(pending.grant)} loses access to ${knowledgeBase.name} on their next request${pending.grant.subjectType === 'ROLE' ? ', unless another grant admits them' : ''}.`
+            ? restricted
+              ? `${grantLabel(pending.grant)} loses access to ${knowledgeBase.name} on their next request${pending.grant.subjectType === 'ROLE' ? ', unless another grant admits them' : ''}.`
+              : `The grant is removed. It had no effect while ${knowledgeBase.name} is open to the workspace.`
             : 'The new level applies on the next request.'
         }
         confirmLabel={pending?.kind === 'lower' ? 'Lower access' : 'Remove access'}
@@ -346,14 +364,17 @@ function Grants({ knowledgeBase }: { knowledgeBase: KnowledgeBase }) {
   );
 }
 
-/** §6.7's warnings when a change would take your own access away. */
+/** Spec §5's self-lockout warning: "You will lose {level} access to this base immediately." */
 function lockoutWarning(name: string, after: AccessLevel | null): ReactNode {
-  if (after === null) return <>You'll lose access to {name} completely. Only the workspace owner or another manager can give it back.</>;
-  return <>You'll lose the ability to manage {name}. Only the workspace owner or another manager can give it back.</>;
-}
-
-function label(grant: KnowledgeBaseGrant): string {
-  return grant.subjectLabel ?? (grant.subjectType === 'ROLE' ? 'This role' : grant.subjectType === 'MEMBER' ? 'This member' : 'This API key');
+  if (after === null) {
+    return <>You will lose all access to {name} immediately. Only the workspace owner or another manager can give it back.</>;
+  }
+  return (
+    <>
+      You will lose Manage access to {name} immediately and keep only {ACCESS_LEVEL_META[after].label}. Only the workspace owner or
+      another manager can give it back.
+    </>
+  );
 }
 
 const SUBJECT = {
@@ -368,10 +389,11 @@ function Subject({ grant, mine, memberIsMe }: { grant: KnowledgeBaseGrant; mine:
     <span className="flex min-w-0 items-center gap-3">
       <span className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg border border-line bg-well text-ink-soft">
         <Icon className="size-4" aria-hidden />
+        <span className="sr-only">{caption}</span>
       </span>
       <span className="min-w-0">
         <span className="flex min-w-0 items-center gap-1.5">
-          <span className="truncate font-medium text-ink">{label(grant)}</span>
+          <span className="truncate font-medium text-ink">{grantLabel(grant)}</span>
           {mine ? (
             <span className="shrink-0 rounded border border-line bg-well px-1 text-[10.5px] leading-4 font-medium text-muted">
               {memberIsMe ? 'You' : 'Your role'}

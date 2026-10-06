@@ -22,7 +22,7 @@ import { useSettleWatcher } from '../shared/use-settle-watcher';
 import { findCachedDocument, type DocumentOutletContext } from './document-context';
 
 /**
- * Document detail (§6.4): a drawer over the vault with its own URL, so it can be
+ * Document detail (§5 "Document detail"): a drawer over the vault with its own URL, so it can be
  * linked to and the vault keeps its filters. Polled while the document processes.
  */
 export function DocumentDrawer() {
@@ -71,7 +71,8 @@ export function DocumentDrawer() {
     { to: base, label: 'Overview', icon: LayoutList, isActive: (path) => path === base },
     { to: `${base}/chunks`, label: 'Chunks', icon: FileSearch },
   ];
-  if (!access.lacks('piiReport')) tabs.push({ to: `${base}/pii`, label: 'PII report', icon: ScanEye });
+  // Spec §5: needs document:read and pii:policy:read; a Viewer has no such tab.
+  if (!access.lacks('piiReport')) tabs.push({ to: `${base}/privacy`, label: 'Redaction', icon: ScanEye });
 
   const context: DocumentOutletContext | null = document ? { document, knowledgeBase, close } : null;
 

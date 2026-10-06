@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { KnowledgeBaseGrant } from '../api/types';
 import {
+  affectsOwnAccess,
   assignableClassifications,
+  deniedBecause,
   atLeast,
   canOnKnowledgeBase,
   clearanceOf,
@@ -186,5 +188,27 @@ describe('myLevelAfter', () => {
 
   it("ignores changes to other people's grants", () => {
     expect(myLevelAfter(grants, me, { removeGrantId: 'g-key' })).toBe('MANAGE');
+  });
+});
+
+describe('deniedBecause (spec §3.7: hide versus disable)', () => {
+  const member = new Set(['document:read', 'document:create', 'document:reindex', 'rag:query', 'clearance:internal', 'knowledgebase:read']);
+
+  it('hides what the role can never do and disables what the level blocks', () => {
+    expect(deniedBecause('download', { access: 'MANAGE' }, member)).toBe('permission');
+    expect(deniedBecause('upload', { access: 'READ' }, member)).toBe('level');
+    expect(deniedBecause('upload', { access: 'WRITE' }, member)).toBeNull();
+  });
+});
+
+describe('affectsOwnAccess (P3-G07)', () => {
+  const me = { membershipId: 'm-1', roleIds: ['r-1'], isOwner: false };
+
+  it('recognises your own member grant and your roles, never for the owner', () => {
+    expect(affectsOwnAccess({ subjectType: 'MEMBER', subjectId: 'm-1' }, me)).toBe(true);
+    expect(affectsOwnAccess({ subjectType: 'ROLE', subjectId: 'r-1' }, me)).toBe(true);
+    expect(affectsOwnAccess({ subjectType: 'ROLE', subjectId: 'r-2' }, me)).toBe(false);
+    expect(affectsOwnAccess({ subjectType: 'API_KEY', subjectId: 'm-1' }, me)).toBe(false);
+    expect(affectsOwnAccess({ subjectType: 'MEMBER', subjectId: 'm-1' }, { ...me, isOwner: true })).toBe(false);
   });
 });

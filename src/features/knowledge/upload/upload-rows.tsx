@@ -1,4 +1,4 @@
-import { Ban, CircleAlert, CircleCheck, Clock, ExternalLink, RotateCcw, X } from 'lucide-react';
+import { Ban, CircleAlert, CircleCheck, CircleHelp, Clock, ExternalLink, RotateCcw, SearchCheck, X } from 'lucide-react';
 import { Link } from 'react-router';
 import { RequestReference } from '@/components/feedback/states';
 import { Button } from '@/components/ui/button';
@@ -112,6 +112,12 @@ export function UploadItemRow({
               </Link>
             </Button>
           ) : null}
+          {item.status === 'unknown' ? (
+            <Button variant="secondary" size="xs" onClick={() => uploadQueue.check(item.id)}>
+              <SearchCheck />
+              Check the vault
+            </Button>
+          ) : null}
           {(item.status === 'failed' && item.error?.retryable) || item.status === 'cancelled' ? (
             <Tooltip content="Send it again">
               <Button variant="ghost" size="icon-xs" className="text-faint" onClick={() => uploadQueue.retry(item.id)} aria-label={`Retry ${item.file.name}`}>
@@ -129,11 +135,22 @@ export function UploadItemRow({
         </div>
       </div>
       {item.status === 'uploading' ? <ProgressBar value={item.progress} className="mt-2 ml-[34px]" /> : null}
-      {item.status === 'failed' && item.error ? (
-        <div className="mt-1.5 ml-[34px] flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs leading-relaxed text-danger-700">
-          <span>{item.error.message}</span>
+      {(item.status === 'failed' || item.status === 'unknown') && item.error ? (
+        <div
+          className={cn(
+            'mt-1.5 ml-[34px] flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs leading-relaxed',
+            item.status === 'unknown' ? 'text-warning-700' : 'text-danger-700',
+          )}
+        >
+          <span>
+            {item.error.message}
+            {item.status === 'unknown' ? ' It is not sent again automatically: check the vault first.' : null}
+          </span>
           {item.requestId ? <RequestReference requestId={item.requestId} /> : null}
         </div>
+      ) : null}
+      {item.status === 'done' && item.foundByCheck ? (
+        <p className="mt-1 ml-[34px] text-xs text-muted">Found in the vault: the upload had gone through.</p>
       ) : null}
     </li>
   );
@@ -179,6 +196,20 @@ function StatusLine({ item, held, resumeIn }: { item: UploadItem; held: boolean;
         <span className="flex items-center gap-1">
           <Ban className="size-3" aria-hidden />
           Cancelled
+        </span>
+      );
+    case 'unknown':
+      return (
+        <span className="flex items-center gap-1 text-warning-700">
+          <CircleHelp className="size-3" aria-hidden />
+          Outcome unknown
+        </span>
+      );
+    case 'checking':
+      return (
+        <span className="flex items-center gap-1 text-brand-700">
+          <Spinner className="size-3" />
+          Checking the vault…
         </span>
       );
   }

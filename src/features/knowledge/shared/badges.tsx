@@ -1,7 +1,8 @@
-import { Clock, Eye, KeyRound, Lock, PenLine, RotateCw, Users } from 'lucide-react';
+import { Clock, Eye, Hourglass, KeyRound, Lock, PenLine, RotateCw, ShieldCheck, TriangleAlert, Users } from 'lucide-react';
+import type { ReactNode } from 'react';
 import type { AccessLevel, Classification, KnowledgeBaseAccessMode, VaultDocument } from '@/lib/api/types';
 import { rankOf } from '@/lib/knowledge/access';
-import { displayStatus, type VaultBadge } from '@/lib/knowledge/status';
+import { displayStatus } from '@/lib/knowledge/status';
 import { Badge } from '@/components/ui/badge';
 import { Spinner } from '@/components/ui/spinner';
 import { Tooltip } from '@/components/ui/tooltip';
@@ -27,7 +28,7 @@ function TierPips({ classification }: { classification: Classification }) {
   );
 }
 
-/** A document's classification, drawn as a small stamp (§6.1: grey, blue, amber, red). */
+/** A document's classification, drawn as a small stamp (§5 "Document Vault": grey, blue, amber, red). */
 export function ClassificationBadge({
   classification,
   className,
@@ -54,64 +55,75 @@ export function ClassificationBadge({
   return withTooltip ? <Tooltip content={meta.description}>{badge}</Tooltip> : badge;
 }
 
-// ── Document status ─────────────────────────────────────────────────────────
+// ── Document status (spec §4.1–4.3) ────────────────────────────────────────
 
-const STATUS_LABEL: Readonly<Record<VaultBadge, string>> = {
-  INDEXED: 'Indexed',
-  INDEXING: 'Indexing',
-  PENDING: 'Pending',
-  FAILED: 'Failed',
-};
+type StatusFields = Pick<VaultDocument, 'status' | 'statusMessage' | 'failureCode' | 'isSearchable' | 'activeIndexVersion'>;
 
-type StatusFields = Pick<VaultDocument, 'status' | 'statusMessage' | 'isSearchable' | 'indexVersion' | 'activeIndexVersion'>;
-
-/** The vault badge for a document (INDEXED / INDEXING / PENDING / FAILED). */
+/**
+ * The status badge: Queued, Processing, Ready, Failed or Reindex failed. Every state
+ * has an icon or a dot as well as a colour, so it reads without colour too.
+ */
 export function DocumentStatusBadge({ document, className }: { document: StatusFields; className?: string }) {
-  const { badge } = displayStatus(document);
-  if (badge === 'INDEXING') {
+  const status = displayStatus(document);
+  if (status.group === 'processing') {
     return (
-      <Badge tone="info" className={className}>
-        <Spinner className="size-3" />
-        {STATUS_LABEL.INDEXING}
+      <Badge tone={status.retrying ? 'warning' : 'info'} className={className}>
+        {status.retrying ? <RotateCw /> : <Spinner className="size-3" />}
+        {status.label}
       </Badge>
     );
   }
-  if (badge === 'PENDING') {
+  if (status.group === 'queued') {
     return (
-      <Badge tone="neutral" className={className}>
-        <Clock />
-        {STATUS_LABEL.PENDING}
+      <Badge tone={status.retrying ? 'warning' : 'neutral'} className={className}>
+        {status.retrying ? <RotateCw /> : <Clock />}
+        {status.label}
+      </Badge>
+    );
+  }
+  if (status.group === 'failed' && status.previousVersionServing) {
+    return (
+      <Badge tone="warning" className={className}>
+        <TriangleAlert />
+        {status.label}
       </Badge>
     );
   }
   return (
-    <Badge tone={badge === 'INDEXED' ? 'success' : 'danger'} dot className={className}>
-      {STATUS_LABEL[badge]}
+    <Badge tone={status.group === 'ready' ? 'success' : 'danger'} dot className={className}>
+      {status.label}
     </Badge>
   );
 }
 
-/** The badge plus its second line: the stage, a retry notice, or "previous version searchable". */
-export function DocumentStatusCell({ document }: { document: StatusFields }) {
+/**
+ * The badge and its second line: the stage, a retry notice ("Retrying"), "Taking
+ * longer than usual" (§9.3: never "failed": only the server decides that), or
+ * "previous version still searchable".
+ */
+export function DocumentStatusCell({ document, slow = false }: { document: StatusFields; slow?: boolean }) {
   const status = displayStatus(document);
-  let note: string | null = null;
+  let note: string | null = status.stage;
   let tone = 'text-muted';
+  let icon: ReactNode = null;
   if (status.retrying) {
-    note = 'Retrying…';
+    note = 'Retrying after a failed attempt';
     tone = 'text-warning-700';
-  } else if (status.badge === 'INDEXING' || (status.badge === 'PENDING' && status.previousVersionServing)) {
-    note = status.stage;
-  } else if (status.badge === 'FAILED' && status.previousVersionServing) {
-    note = 'Previous version searchable';
-  } else if (status.badge === 'PENDING') {
-    note = document.activeIndexVersion !== null ? 'Reindex queued' : 'Queued';
+    icon = <RotateCw className="mt-0.5 size-3 shrink-0" aria-hidden />;
+  } else if (slow) {
+    note = 'Taking longer than usual';
+    tone = 'text-warning-700';
+    icon = <Hourglass className="mt-0.5 size-3 shrink-0" aria-hidden />;
+  } else if (status.group === 'failed' && status.previousVersionServing) {
+    tone = 'text-muted';
+    icon = <ShieldCheck className="mt-0.5 size-3 shrink-0 text-success-600" aria-hidden />;
   }
   return (
     <span className="grid justify-items-start gap-0.5">
       <DocumentStatusBadge document={document} />
       {note ? (
-        <span className={cn('flex max-w-[9.5rem] items-start gap-1 text-[11.5px] leading-4', tone)}>
-          {status.retrying ? <RotateCw className="mt-0.5 size-3 shrink-0" aria-hidden /> : null}
+        <span className={cn('flex max-w-[10rem] items-start gap-1 text-[11.5px] leading-4', tone)}>
+          {icon}
           {note}
         </span>
       ) : null}

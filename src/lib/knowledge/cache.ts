@@ -1,22 +1,24 @@
-import type { Paginated, VaultDocument, KnowledgeBase } from '../api/types';
+import type { KnowledgeBase, Paginated, PiiPolicy, VaultDocument } from '../api/types';
 import { queryKeys } from '../queries';
 import { queryClient } from '../query-client';
 import { isInProgress } from './status';
 
 /**
- * What to refetch after each knowledge change (Phase 3 spec §10.4). Kept in one
- * place so every screen that makes the same change refreshes the same things.
+ * What to refetch or evict after each knowledge change (Phase 3 spec §9.4). Kept in
+ * one place so every screen that makes the same change refreshes the same things.
+ * Access, classification and deletion are never optimistic: these run after the
+ * server confirmed.
  */
 
 const invalidate = (queryKey: readonly unknown[]) => queryClient.invalidateQueries({ queryKey });
 
-/** E61: a new base. */
+/** P3-API-02: a new base. */
 export function afterKnowledgeBaseCreated(workspaceId: string, created: KnowledgeBase): Promise<unknown> {
   queryClient.setQueryData(queryKeys.knowledgeBaseDetail(workspaceId, created.id), created);
   return Promise.all([invalidate(queryKeys.knowledgeBases(workspaceId)), invalidate(queryKeys.ragScope(workspaceId))]);
 }
 
-/** E63: store the answer; the access mode decides what else moved. */
+/** P3-API-04: store the answer; base list, detail and the access scope move with it. */
 export function afterKnowledgeBaseUpdated(
   workspaceId: string,
   updated: KnowledgeBase,
@@ -26,13 +28,14 @@ export function afterKnowledgeBaseUpdated(
   const modeChanged = !!previous && previous.accessMode !== updated.accessMode;
   return Promise.all([
     invalidate(queryKeys.knowledgeBases(workspaceId)),
-    modeChanged ? invalidate(queryKeys.ragScope(workspaceId)) : null,
+    invalidate(queryKeys.ragScope(workspaceId)),
     modeChanged ? invalidate(queryKeys.documents(workspaceId)) : null,
-    updated.accessMode === 'RESTRICTED' ? invalidate(queryKeys.knowledgeBaseGrants(workspaceId, updated.id)) : null,
+    // Switching to RESTRICTED granted you MANAGE: the grant list has a new row.
+    modeChanged ? invalidate(queryKeys.knowledgeBaseGrants(workspaceId, updated.id)) : null,
   ]);
 }
 
-/** E64: the base and every document of it are gone. Call after leaving its page. */
+/** P3-API-05: the base and every document of it are gone. Call after leaving its page. */
 export function afterKnowledgeBaseDeleted(workspaceId: string, knowledgeBaseId: string): Promise<unknown> {
   // Documents of the base that are cached anywhere: drop them with their chunks and reports.
   const doomed = new Set<string>();
@@ -40,6 +43,9 @@ export function afterKnowledgeBaseDeleted(workspaceId: string, knowledgeBaseId: 
     if (data && typeof data === 'object' && 'knowledgeBaseId' in data && data.knowledgeBaseId === knowledgeBaseId) {
       doomed.add(data.id);
     }
+  }
+  for (const [, page] of queryClient.getQueriesData<Paginated<VaultDocument>>({ queryKey: queryKeys.documents(workspaceId) })) {
+    for (const document of page?.items ?? []) if (document.knowledgeBaseId === knowledgeBaseId) doomed.add(document.id);
   }
   for (const documentId of doomed) queryClient.removeQueries({ queryKey: queryKeys.documentDetail(workspaceId, documentId) });
   queryClient.removeQueries({ queryKey: queryKeys.knowledgeBaseDetail(workspaceId, knowledgeBaseId) });
@@ -54,7 +60,7 @@ export function afterKnowledgeBaseDeleted(workspaceId: string, knowledgeBaseId: 
   ]);
 }
 
-/** E66 / E67: your own access may have changed with the grant. */
+/** P3-API-07 / P3-API-08: your own access may have changed with the grant. */
 export function afterGrantsChanged(workspaceId: string, knowledgeBaseId: string): Promise<unknown> {
   return Promise.all([
     invalidate(queryKeys.knowledgeBaseGrants(workspaceId, knowledgeBaseId)),
@@ -65,7 +71,7 @@ export function afterGrantsChanged(workspaceId: string, knowledgeBaseId: string)
   ]);
 }
 
-/** E68: new rows in the table, new counts in the stats. */
+/** P3-API-09: new rows in the table, new counts in the stats. Polling starts from the list. */
 export function afterUpload(workspaceId: string): Promise<unknown> {
   return Promise.all([invalidate(queryKeys.documents(workspaceId)), invalidate(queryKeys.knowledgeBases(workspaceId))]);
 }
@@ -77,7 +83,7 @@ function patchDocumentInLists(workspaceId: string, document: VaultDocument): voi
   );
 }
 
-/** E73: edit or reclassify. A reclassification changes who counts it and what the report shows. */
+/** P3-API-14: edit or reclassify. A reclassification changes who counts it and what the report shows. */
 export function afterDocumentUpdated(workspaceId: string, document: VaultDocument): Promise<unknown> {
   queryClient.setQueryData(queryKeys.documentDetail(workspaceId, document.id), document);
   patchDocumentInLists(workspaceId, document);
@@ -88,14 +94,14 @@ export function afterDocumentUpdated(workspaceId: string, document: VaultDocumen
   ]);
 }
 
-/** E74: reindex or retry; the status restarts at UPLOADED and polling picks it up. */
+/** P3-API-15: reindex or retry; the status restarts at UPLOADED and polling picks it up. */
 export function afterReindex(workspaceId: string, document: VaultDocument): Promise<unknown> {
   queryClient.setQueryData(queryKeys.documentDetail(workspaceId, document.id), document);
   patchDocumentInLists(workspaceId, document);
   return Promise.all([invalidate(queryKeys.documents(workspaceId)), invalidate(queryKeys.knowledgeBases(workspaceId))]);
 }
 
-/** E75, or any 404 on a document: it's gone for this user. */
+/** P3-API-16, or any 404 on a document: it's gone for this user. Evict detail, chunks and report. */
 export function afterDocumentGone(workspaceId: string, documentId: string): Promise<unknown> {
   queryClient.removeQueries({ queryKey: queryKeys.documentDetail(workspaceId, documentId) });
   queryClient.setQueriesData<Paginated<VaultDocument>>({ queryKey: queryKeys.documents(workspaceId) }, (page) =>
@@ -105,13 +111,14 @@ export function afterDocumentGone(workspaceId: string, documentId: string): Prom
 }
 
 /**
- * A poll showed documents leaving the in-progress states: the stats changed, and
- * their chunks now exist (or are a new version).
+ * A poll showed documents leaving the in-progress states (spec §9.3): the stats
+ * changed, and their detail, chunks and report are a new version (or none).
  */
 export function afterProcessingSettled(workspaceId: string, documentIds: readonly string[]): Promise<unknown> {
   return Promise.all([
     invalidate(queryKeys.knowledgeBases(workspaceId)),
     ...documentIds.flatMap((documentId) => [
+      invalidate(queryKeys.documentDetail(workspaceId, documentId)),
       invalidate(queryKeys.documentChunks(workspaceId, documentId)),
       invalidate(queryKeys.documentPiiReport(workspaceId, documentId)),
     ]),
@@ -119,8 +126,23 @@ export function afterProcessingSettled(workspaceId: string, documentIds: readonl
 }
 
 /**
- * Phase 2 role or member changes and E30 settings: clearance and grants may have
- * moved, so everything the knowledge layer filters by access is stale.
+ * P3-API-18: the new policy applies to the next request everywhere. Entity types
+ * carry `enabled` flags, and every open redaction report was masked the old way.
+ */
+export function afterPolicyUpdated(workspaceId: string, policy: PiiPolicy): Promise<unknown> {
+  queryClient.setQueryData(queryKeys.piiPolicy(workspaceId), policy);
+  return Promise.all([
+    invalidate(queryKeys.piiEntityTypes(workspaceId)),
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.document(workspaceId),
+      predicate: (query) => query.queryKey.includes('pii-report'),
+    }),
+  ]);
+}
+
+/**
+ * Phase 2 role or member changes and workspace settings: clearance and grants may
+ * have moved, so everything the knowledge layer filters by access is stale.
  */
 export function invalidateKnowledgeAccess(workspaceId: string): Promise<unknown> {
   return Promise.all([
@@ -128,6 +150,8 @@ export function invalidateKnowledgeAccess(workspaceId: string): Promise<unknown>
     invalidate(queryKeys.knowledgeBase(workspaceId)),
     invalidate(queryKeys.ragScope(workspaceId)),
     invalidate(queryKeys.documents(workspaceId)),
+    invalidate(queryKeys.document(workspaceId)),
+    invalidate(queryKeys.pii(workspaceId)),
   ]);
 }
 

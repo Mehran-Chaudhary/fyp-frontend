@@ -33,7 +33,7 @@ const SORTS: Readonly<Record<SortKey, { label: string; sortBy: NonNullable<ListK
 
 const PAGE_SIZE = 20;
 
-/** Knowledge bases (Phase 3 spec §6.6, E60). */
+/** Knowledge bases (Phase 3 spec §5 "Knowledge bases", P3-API-01). */
 export function KnowledgeBasesPage() {
   const workspace = useWorkspace();
   const can = useCan();
@@ -117,7 +117,12 @@ function KnowledgeBasesList() {
         description={
           <>
             Compartments for your documents: open to the workspace, or restricted to the people, roles and API keys you grant.
-            {total !== undefined ? <span className="text-ink-soft"> You can see {pluralize(total, 'knowledge base')}.</span> : null}
+            {total !== undefined ? (
+              <span className="text-ink-soft">
+                {' '}
+                You can see {pluralize(total, 'knowledge base')}; document counts cover the documents you can see.
+              </span>
+            ) : null}
           </>
         }
         actions={

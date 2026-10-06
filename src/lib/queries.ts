@@ -21,7 +21,7 @@ import type {
   ListKnowledgeBasesParams,
   ListMembersParams,
 } from './api/types';
-import { pollInterval } from './knowledge/status';
+import { anyInProgress, processingPollInterval } from './knowledge/polling';
 import { hashString } from './utils';
 
 /**
@@ -67,7 +67,7 @@ export const queryKeys = {
   apiKeyScopes: (workspaceId: string) => ['ws', workspaceId, 'api-key-scopes'] as const,
   ipRules: (workspaceId: string) => ['ws', workspaceId, 'ip-rules'] as const,
 
-  // ── Phase 3 (spec §10.1) ──
+  // ── Phase 3 (spec §9.1) ──
   knowledgeBases: (workspaceId: string) => ['ws', workspaceId, 'knowledge-bases'] as const,
   knowledgeBasesList: (workspaceId: string, params: ListKnowledgeBasesParams) =>
     ['ws', workspaceId, 'knowledge-bases', params] as const,
@@ -84,16 +84,27 @@ export const queryKeys = {
   documentDetail: (workspaceId: string, documentId: string) => ['ws', workspaceId, 'document', documentId] as const,
   documentChunks: (workspaceId: string, documentId: string) =>
     ['ws', workspaceId, 'document', documentId, 'chunks'] as const,
-  documentChunksPage: (workspaceId: string, documentId: string, page: number) =>
-    ['ws', workspaceId, 'document', documentId, 'chunks', page] as const,
+  /** Keyed by the active version, so a finished reindex reads the new chunks (spec §9.1). */
+  documentChunksPage: (workspaceId: string, documentId: string, activeIndexVersion: number | null, page: number) =>
+    ['ws', workspaceId, 'document', documentId, 'chunks', activeIndexVersion, page] as const,
   documentPiiReport: (workspaceId: string, documentId: string) =>
     ['ws', workspaceId, 'document', documentId, 'pii-report'] as const,
-  documentPiiReportPage: (workspaceId: string, documentId: string, page: number, limit: number) =>
-    ['ws', workspaceId, 'document', documentId, 'pii-report', { page, limit }] as const,
+  /** Keyed by the active version and the policy version: either changes what is masked. Never revealed pages. */
+  documentPiiReportPage: (workspaceId: string, documentId: string, report: PiiReportKey) =>
+    ['ws', workspaceId, 'document', documentId, 'pii-report', report] as const,
   ragScope: (workspaceId: string) => ['ws', workspaceId, 'rag-scope'] as const,
-  piiEntityTypes: (workspaceId: string) => ['ws', workspaceId, 'pii-entity-types'] as const,
-  piiPolicy: (workspaceId: string) => ['ws', workspaceId, 'pii-policy'] as const,
+  pii: (workspaceId: string) => ['ws', workspaceId, 'pii'] as const,
+  piiEntityTypes: (workspaceId: string) => ['ws', workspaceId, 'pii', 'types'] as const,
+  piiPolicy: (workspaceId: string) => ['ws', workspaceId, 'pii', 'policy'] as const,
 };
+
+/** What a page of a document's redaction report depends on. */
+export interface PiiReportKey {
+  activeIndexVersion: number | null;
+  policyVersion: number | null;
+  page: number;
+  limit: number;
+}
 
 export const meQuery = queryOptions({
   queryKey: queryKeys.me,
@@ -329,20 +340,20 @@ export const invitationPreviewQuery = (token: string) =>
     refetchOnReconnect: false,
   });
 
-// ── Phase 3 (spec §10) ──────────────────────────────────────────────────────
+// ── Phase 3 (spec §9: every key starts with the canonical workspace id; reads are cancellable) ──
 
 export const knowledgeBasesQuery = (workspaceId: string, params: ListKnowledgeBasesParams) =>
   queryOptions({
     queryKey: queryKeys.knowledgeBasesList(workspaceId, params),
-    queryFn: () => knowledgeBasesApi.list(workspaceId, params),
+    queryFn: ({ signal }) => knowledgeBasesApi.list(workspaceId, params, signal),
     placeholderData: keepPreviousData,
   });
 
-/** Pages through E60 at its maximum page size; almost always one request. */
-async function fetchAllKnowledgeBases(workspaceId: string): Promise<KnowledgeBase[]> {
+/** Pages through P3-API-01 at its maximum page size; almost always one request. */
+async function fetchAllKnowledgeBases(workspaceId: string, signal: AbortSignal): Promise<KnowledgeBase[]> {
   const all: KnowledgeBase[] = [];
   for (let page = 1; page <= 50; page += 1) {
-    const result = await knowledgeBasesApi.list(workspaceId, { page, limit: 100, sortBy: 'name', sortDirection: 'ASC' });
+    const result = await knowledgeBasesApi.list(workspaceId, { page, limit: 100, sortBy: 'name', sortDirection: 'ASC' }, signal);
     all.push(...result.items);
     if (!result.pagination.hasNextPage) break;
   }
@@ -352,76 +363,90 @@ async function fetchAllKnowledgeBases(workspaceId: string): Promise<KnowledgeBas
 export const allKnowledgeBasesQuery = (workspaceId: string) =>
   queryOptions({
     queryKey: queryKeys.knowledgeBasesAll(workspaceId),
-    queryFn: () => fetchAllKnowledgeBases(workspaceId),
+    queryFn: ({ signal }) => fetchAllKnowledgeBases(workspaceId, signal),
   });
 
 export const knowledgeBaseQuery = (workspaceId: string, knowledgeBaseId: string) =>
   queryOptions({
     queryKey: queryKeys.knowledgeBaseDetail(workspaceId, knowledgeBaseId),
-    queryFn: () => knowledgeBasesApi.get(workspaceId, knowledgeBaseId),
+    queryFn: ({ signal }) => knowledgeBasesApi.get(workspaceId, knowledgeBaseId, signal),
   });
 
 export const knowledgeBaseGrantsQuery = (workspaceId: string, knowledgeBaseId: string) =>
   queryOptions({
     queryKey: queryKeys.knowledgeBaseGrants(workspaceId, knowledgeBaseId),
-    queryFn: () => knowledgeBasesApi.grants(workspaceId, knowledgeBaseId),
+    queryFn: ({ signal }) => knowledgeBasesApi.grants(workspaceId, knowledgeBaseId, signal),
   });
 
-/** E69, polled while anything on the page is still processing (§10.3). */
+/**
+ * P3-API-10, polled while anything it shows is processing (spec §9.3): 2 s, then
+ * 5 s, then 15 s, stopping after 30 minutes. Paused while the tab is hidden and
+ * refetched as soon as it is shown again.
+ */
 export const documentsQuery = (workspaceId: string, params: ListDocumentsParams) =>
   queryOptions({
     queryKey: queryKeys.documentsList(workspaceId, params),
-    queryFn: () => documentsApi.list(workspaceId, params),
+    queryFn: ({ signal }) => documentsApi.list(workspaceId, params, signal),
     placeholderData: keepPreviousData,
-    refetchInterval: (query) => pollInterval(query.state.data?.items ?? []),
+    refetchInterval: (query) => processingPollInterval(query.queryHash, query.state.data?.items, query.state.error),
     refetchIntervalInBackground: false,
+    refetchOnWindowFocus: (query) => (anyInProgress(query.state.data?.items) ? 'always' : true),
   });
 
-/** E70, polled while the document is processing (§10.3). */
+/** P3-API-11 for one open document, polled the same way while it processes. */
 export const documentQuery = (workspaceId: string, documentId: string) =>
   queryOptions({
     queryKey: queryKeys.documentDetail(workspaceId, documentId),
-    queryFn: () => documentsApi.get(workspaceId, documentId),
-    refetchInterval: (query) => (query.state.data ? pollInterval([query.state.data]) : false),
+    queryFn: ({ signal }) => documentsApi.get(workspaceId, documentId, signal),
+    refetchInterval: (query) =>
+      processingPollInterval(query.queryHash, query.state.data ? [query.state.data] : undefined, query.state.error),
     refetchIntervalInBackground: false,
+    refetchOnWindowFocus: (query) => (query.state.data && anyInProgress([query.state.data]) ? 'always' : true),
   });
 
-export const documentChunksQuery = (workspaceId: string, documentId: string, page: number) =>
+/** P3-API-12. Chunk text is sensitive: memory only, never persisted (spec §9.2). */
+export const documentChunksQuery = (workspaceId: string, documentId: string, activeIndexVersion: number | null, page: number) =>
   queryOptions({
-    queryKey: queryKeys.documentChunksPage(workspaceId, documentId, page),
-    queryFn: () => documentsApi.chunks(workspaceId, documentId, page, 20),
+    queryKey: queryKeys.documentChunksPage(workspaceId, documentId, activeIndexVersion, page),
+    queryFn: ({ signal }) => documentsApi.chunks(workspaceId, documentId, page, 20, signal),
     placeholderData: keepPreviousData,
   });
 
-/** E78 without reveal. Limited to 30 per minute, so it stays fresh for a minute. */
-export const documentPiiReportQuery = (workspaceId: string, documentId: string, page: number, limit: number) =>
+/**
+ * P3-API-21 without reveal (revealed pages are never cached). The privacy budget is
+ * 30 a minute, shared with the analysis preview, so a page stays fresh for a minute.
+ */
+export const documentPiiReportQuery = (workspaceId: string, documentId: string, report: PiiReportKey) =>
   queryOptions({
-    queryKey: queryKeys.documentPiiReportPage(workspaceId, documentId, page, limit),
-    queryFn: ({ signal }) => piiApi.documentReport(workspaceId, documentId, { page, limit }, signal),
+    queryKey: queryKeys.documentPiiReportPage(workspaceId, documentId, report),
+    queryFn: ({ signal }) =>
+      piiApi.documentReport(workspaceId, documentId, { page: report.page, limit: report.limit }, signal),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
 
+/** P3-API-23. Needs rag:query. */
 export const ragScopeQuery = (workspaceId: string) =>
   queryOptions({
     queryKey: queryKeys.ragScope(workspaceId),
-    queryFn: () => ragApi.accessScope(workspaceId),
+    queryFn: ({ signal }) => ragApi.accessScope(workspaceId, signal),
     staleTime: 60_000,
   });
 
-/** The PII report's legend: cached for the session. */
+/** P3-API-19. `enabled` follows the policy, so it is refetched after every policy save. */
 export const piiEntityTypesQuery = (workspaceId: string) =>
   queryOptions({
     queryKey: queryKeys.piiEntityTypes(workspaceId),
-    queryFn: () => piiApi.entityTypes(workspaceId),
-    staleTime: Infinity,
+    queryFn: ({ signal }) => piiApi.entityTypes(workspaceId, signal),
+    staleTime: 5 * 60_000,
     retry: false,
   });
 
+/** P3-API-17. Takes effect on the next request everywhere, so it is re-read on focus. */
 export const piiPolicyQuery = (workspaceId: string) =>
   queryOptions({
     queryKey: queryKeys.piiPolicy(workspaceId),
-    queryFn: () => piiApi.policy(workspaceId),
+    queryFn: ({ signal }) => piiApi.policy(workspaceId, signal),
     staleTime: 60_000,
     retry: false,
   });

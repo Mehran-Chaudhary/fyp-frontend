@@ -19,7 +19,7 @@ import { NotAvailableState } from '../shared/states';
 import { useDocumentContext } from './document-context';
 
 /**
- * The Chunks tab (§6.4, E71): each chunk exactly as retrieval serves it. During a
+ * The Chunks tab (§5 "Document detail", P3-API-12): each chunk exactly as retrieval serves it. During a
  * reindex it shows the version that is still answering searches.
  */
 export function DocumentChunksTab() {
@@ -27,7 +27,10 @@ export function DocumentChunksTab() {
   const workspace = useWorkspace();
   const [page, setPage] = useState(1);
   const [find, setFind] = useState('');
-  const chunks = useQuery(documentChunksQuery(workspace.id, document.id, page));
+  const chunks = useQuery(documentChunksQuery(workspace.id, document.id, document.activeIndexVersion, page));
+  // A finished reindex can leave fewer pages than the one being read.
+  const totalPages = chunks.data?.pagination.totalPages ?? 0;
+  if (!chunks.isPlaceholderData && totalPages > 0 && page > totalPages) setPage(totalPages);
   const status = displayStatus(document);
   const terms = find.trim() ? [find.trim().toLowerCase()] : [];
 
@@ -53,7 +56,7 @@ export function DocumentChunksTab() {
   const matches = terms.length ? items.filter((chunk) => chunk.text.toLowerCase().includes(terms[0])).length : null;
 
   return (
-    <div className="grid gap-4 px-5 py-5 sm:px-6">
+    <div className="grid grid-cols-1 gap-4 px-5 py-5 sm:px-6">
       {status.previousVersionServing ? (
         <Callout tone="info" icon={<Info className="size-4" />}>
           Showing version {document.activeIndexVersion}, which still answers searches. Version {document.indexVersion}'s chunks
@@ -83,7 +86,9 @@ export function DocumentChunksTab() {
         <>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-[13px] text-muted">
-              {chunks.data?.pagination.totalItems.toLocaleString()} chunks · exactly what search retrieves
+              {chunks.data?.pagination.totalItems.toLocaleString()} chunks
+              {document.activeIndexVersion !== null ? ` of version ${document.activeIndexVersion}` : null} · exactly what search
+              retrieves
             </p>
             <Input
               className="w-full sm:w-60"
@@ -107,6 +112,10 @@ export function DocumentChunksTab() {
               {matches === 0 ? 'No chunk on this page contains that.' : `${matches} of ${items.length} chunks on this page contain it.`}
             </p>
           ) : null}
+          <p className="-mt-2 text-xs leading-relaxed text-faint">
+            A chunk may start with the section headings it sits under, added for context, so it isn't always a word-for-word
+            excerpt. It's shown unmasked to people cleared for this document; masking applies when text is sent to a model.
+          </p>
           <ol className="grid gap-3">
             {items.map((chunk) => (
               <ChunkCard key={chunk.id} chunk={chunk} terms={terms} dimmed={matches !== null && !chunk.text.toLowerCase().includes(terms[0])} />

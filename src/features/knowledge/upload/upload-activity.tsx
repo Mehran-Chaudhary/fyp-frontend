@@ -25,7 +25,8 @@ export function UploadActivity() {
   const [expanded, setExpanded] = useState(true);
 
   if (mine.length === 0) return null;
-  const finished = mine.filter((item) => item.status !== 'queued' && item.status !== 'uploading');
+  // Unknown outcomes stay until they're checked: dismissing them would lose track of the file.
+  const finished = mine.filter((item) => item.status === 'done' || item.status === 'failed' || item.status === 'cancelled');
 
   return (
     <Card className="overflow-hidden animate-rise">
@@ -45,6 +46,7 @@ export function UploadActivity() {
               {' · '}
               {summary.done} done
               {summary.failed ? <span className="text-danger-700"> · {summary.failed} failed</span> : null}
+              {summary.unknown ? <span className="text-warning-700"> · {summary.unknown} to check</span> : null}
             </span>
           </p>
           {summary.active ? <ProgressBar value={summary.progress} className="mt-1.5 max-w-sm" /> : null}
@@ -59,6 +61,11 @@ export function UploadActivity() {
               }}
             >
               Cancel all
+            </Button>
+          ) : null}
+          {summary.unknown ? (
+            <Button variant="secondary" size="xs" onClick={() => uploadQueue.checkAll(workspace.id)}>
+              Check the vault
             </Button>
           ) : null}
           {finished.length ? (
@@ -99,10 +106,15 @@ export function UploadWatcher() {
 
   useEffect(
     () =>
-      uploadEvents.on('batch-settled', ({ batchId, workspaceId, done, failed }) => {
-        if (workspaceId !== workspace.id || isBatchVisible(batchId) || done + failed === 0) return;
+      uploadEvents.on('batch-settled', ({ batchId, workspaceId, done, failed, unknown }) => {
+        if (workspaceId !== workspace.id || isBatchVisible(batchId) || done + failed + unknown === 0) return;
         const open = { label: 'Open vault', onClick: () => void navigate(`/w/${workspace.slug}/documents`) };
-        if (failed === 0) {
+        if (unknown > 0) {
+          toast.warning(`${pluralize(unknown, 'upload')} got no answer`, {
+            description: 'They may have been stored. Check the vault before sending them again.',
+            action: open,
+          });
+        } else if (failed === 0) {
           toast.success(`${pluralize(done, 'file')} uploaded`, { description: 'Queued for processing.', action: open });
         } else {
           toast.warning(done ? `${done} uploaded, ${failed} failed` : `${pluralize(failed, 'upload')} failed`, {

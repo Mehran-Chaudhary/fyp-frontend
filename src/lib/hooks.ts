@@ -33,6 +33,39 @@ export function useNow(): number {
   return useSyncExternalStore(subscribeClock, getClock, getClock);
 }
 
+// ── A coarse clock for slow-moving thresholds ───────────────────────────────
+// "Taking longer than usual" (10 minutes) and "polling stopped" (30 minutes) don't
+// need a second's precision, and a table re-rendering every second would.
+
+const coarseListeners = new Set<() => void>();
+let coarseNow = Date.now();
+let coarseTimer: number | null = null;
+
+function subscribeCoarseClock(listener: () => void): () => void {
+  coarseListeners.add(listener);
+  coarseNow = Date.now();
+  if (coarseTimer === null) {
+    coarseTimer = window.setInterval(() => {
+      coarseNow = Date.now();
+      for (const notify of coarseListeners) notify();
+    }, 30_000);
+  }
+  return () => {
+    coarseListeners.delete(listener);
+    if (coarseListeners.size === 0 && coarseTimer !== null) {
+      window.clearInterval(coarseTimer);
+      coarseTimer = null;
+    }
+  };
+}
+
+const getCoarseClock = () => coarseNow;
+
+/** The current time, updated every 30 seconds while mounted. */
+export function useCoarseNow(): number {
+  return useSyncExternalStore(subscribeCoarseClock, getCoarseClock, getCoarseClock);
+}
+
 /**
  * Seconds left until `target` (epoch ms). Calls `onDone` once when it reaches zero.
  * Returns 0 when there is no target.

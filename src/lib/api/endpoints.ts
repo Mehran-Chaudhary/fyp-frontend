@@ -3,6 +3,8 @@ import { call, callPaginated, download, request, workspacePath } from './client'
 import type {
   AcceptInvitationResponse,
   AccessScope,
+  AnalyzeResult,
+  AnalyzeTextRequest,
   ApiKey,
   AuthResponse,
   ChangePasswordRequest,
@@ -51,6 +53,7 @@ import type {
   UpdateKnowledgeBaseRequest,
   UpdateMemberProfileRequest,
   UpdateOrganizationRequest,
+  UpdatePiiPolicyRequest,
   UpdateProfileRequest,
   UpdateProfileResponse,
   UpdateRoleRequest,
@@ -406,57 +409,57 @@ export const apiKeysApi = {
   },
 };
 
-// ── Phase 3 ─────────────────────────────────────────────────────────────────
+// ── Phase 3: knowledge, document vault & privacy (spec §7: 23 operations) ──────
 
-/** E76: the server allows 60 s; wait slightly longer so its answer arrives (spec §2.2). */
+/** P3-API-22: the server allows 60 s; wait slightly longer so its answer arrives (spec §2). */
 const RETRIEVAL_TIMEOUT_MS = 65_000;
-/** E72: the server allows 120 s for large files. */
-const DOCUMENT_DOWNLOAD_TIMEOUT_MS = 130_000;
+/** P3-API-09 and P3-API-13: the server allows 120 s for the transfer. */
+const TRANSFER_TIMEOUT_MS = 130_000;
 
 export const knowledgeBasesApi = {
-  /** E60. Only bases you can read; `stats` count what your clearance covers. */
-  list: (workspaceId: string, params: ListKnowledgeBasesParams = {}) => {
+  /** P3-API-01. Only bases you can read; `stats` count what your clearance covers. No sortBy → name ASC. */
+  list: (workspaceId: string, params: ListKnowledgeBasesParams = {}, signal?: AbortSignal) => {
     const [path, scope] = workspacePath(workspaceId, '/knowledge-bases');
-    return callPaginated<KnowledgeBase>(path, { ...scope, query: { ...params } });
+    return callPaginated<KnowledgeBase>(path, { ...scope, query: { ...params }, signal });
   },
 
-  /** E61. A RESTRICTED base comes with a MANAGE grant for you (unless you're the owner). */
+  /** P3-API-02. A RESTRICTED base comes with a MANAGE grant for you (unless you're the owner). */
   create: (workspaceId: string, body: CreateKnowledgeBaseRequest) => {
     const [path, scope] = workspacePath(workspaceId, '/knowledge-bases');
     return call<KnowledgeBase>(path, { ...scope, method: 'POST', body });
   },
 
-  /** E62. Unknown, deleted and hidden bases all answer 404. */
-  get: (workspaceId: string, knowledgeBaseId: string) => {
+  /** P3-API-03. Unknown, deleted and hidden bases all answer 404 KNOWLEDGE_BASE_NOT_FOUND. */
+  get: (workspaceId: string, knowledgeBaseId: string, signal?: AbortSignal) => {
     const [path, scope] = workspacePath(workspaceId, `/knowledge-bases/${id(knowledgeBaseId)}`);
-    return call<KnowledgeBase>(path, scope);
+    return call<KnowledgeBase>(path, { ...scope, signal });
   },
 
-  /** E63. Send only what changed; `null` chunk settings return to inheriting. */
+  /** P3-API-04. Send only what changed; `null` chunk settings return to inheriting. */
   update: (workspaceId: string, knowledgeBaseId: string, body: UpdateKnowledgeBaseRequest) => {
     const [path, scope] = workspacePath(workspaceId, `/knowledge-bases/${id(knowledgeBaseId)}`);
     return call<KnowledgeBase>(path, { ...scope, method: 'PATCH', body });
   },
 
-  /** E64. Destroys every document's key in the same transaction. */
+  /** P3-API-05. Destroys every document's key in the same transaction: no undo. */
   remove: (workspaceId: string, knowledgeBaseId: string) => {
     const [path, scope] = workspacePath(workspaceId, `/knowledge-bases/${id(knowledgeBaseId)}`);
     return call<{ deleted: true }>(path, { ...scope, method: 'DELETE' });
   },
 
-  /** E65. Oldest first, not paginated. Needs MANAGE on the base. */
-  grants: (workspaceId: string, knowledgeBaseId: string) => {
+  /** P3-API-06. Oldest first, a complete array. Needs MANAGE on the base. */
+  grants: (workspaceId: string, knowledgeBaseId: string, signal?: AbortSignal) => {
     const [path, scope] = workspacePath(workspaceId, `/knowledge-bases/${id(knowledgeBaseId)}/grants`);
-    return call<KnowledgeBaseGrant[]>(path, scope);
+    return call<KnowledgeBaseGrant[]>(path, { ...scope, signal });
   },
 
-  /** E66. An upsert: granting the same subject again changes its level (same grant id). */
+  /** P3-API-07. An upsert: granting the same subject again changes its level (same grant id). */
   upsertGrant: (workspaceId: string, knowledgeBaseId: string, body: UpsertGrantRequest) => {
     const [path, scope] = workspacePath(workspaceId, `/knowledge-bases/${id(knowledgeBaseId)}/grants`);
     return call<KnowledgeBaseGrant>(path, { ...scope, method: 'PUT', body });
   },
 
-  /** E67. Effective on the next request, including for yourself. */
+  /** P3-API-08. Effective on the next request, including for yourself. */
   revokeGrant: (workspaceId: string, knowledgeBaseId: string, grantId: string) => {
     const [path, scope] = workspacePath(workspaceId, `/knowledge-bases/${id(knowledgeBaseId)}/grants/${id(grantId)}`);
     return call<{ revoked: true }>(path, { ...scope, method: 'DELETE' });
@@ -464,70 +467,111 @@ export const knowledgeBasesApi = {
 };
 
 export const documentsApi = {
-  /** E69. Documents above your clearance or in hidden bases are simply not listed. */
-  list: (workspaceId: string, params: ListDocumentsParams = {}) => {
-    const [path, scope] = workspacePath(workspaceId, '/documents');
-    const { status, ...rest } = params;
-    // BF-18: several statuses in one comma-separated parameter.
-    return callPaginated<VaultDocument>(path, {
+  /**
+   * P3-API-09. multipart/form-data with one part named `file`; answers 202 with the
+   * stored, queued document. Never replayed after a timeout: the file may be stored.
+   * The rate-limit headers come back in `rateLimit` (the upload budget is hourly).
+   */
+  upload: (
+    workspaceId: string,
+    knowledgeBaseId: string,
+    form: FormData,
+    options: { onProgress?: (fraction: number) => void; signal?: AbortSignal } = {},
+  ) => {
+    const [path, scope] = workspacePath(workspaceId, `/knowledge-bases/${id(knowledgeBaseId)}/documents`);
+    return request<VaultDocument>(path, {
       ...scope,
-      query: { ...rest, status: status?.length ? status.join(',') : undefined },
+      method: 'POST',
+      body: form,
+      timeoutMs: TRANSFER_TIMEOUT_MS,
+      onUploadProgress: options.onProgress ?? (() => undefined),
+      signal: options.signal,
+      // The upload queue explains a refused upload per file and re-reads permissions itself.
+      localCodes: ['PERMISSION_DENIED'],
     });
   },
 
-  /** E70 */
-  get: (workspaceId: string, documentId: string) => {
+  /** P3-API-10. Documents above your clearance or in hidden bases are simply not listed. */
+  list: (workspaceId: string, params: ListDocumentsParams = {}, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, '/documents');
+    const { status, ...rest } = params;
+    // Several statuses in one comma-separated parameter.
+    return callPaginated<VaultDocument>(path, {
+      ...scope,
+      query: { ...rest, status: status?.length ? status.join(',') : undefined },
+      signal,
+    });
+  },
+
+  /** P3-API-11. Hidden (compartment or clearance), deleted or unknown: 404 DOCUMENT_NOT_FOUND. */
+  get: (workspaceId: string, documentId: string, signal?: AbortSignal) => {
     const [path, scope] = workspacePath(workspaceId, `/documents/${id(documentId)}`);
-    return call<VaultDocument>(path, scope);
+    return call<VaultDocument>(path, { ...scope, signal });
   },
 
-  /** E71. The version retrieval serves, in order. Chunk ids change on every reindex. */
-  chunks: (workspaceId: string, documentId: string, page: number, limit = 20) => {
+  /** P3-API-12. The active version retrieval serves, in order. Chunk ids change on every reindex. */
+  chunks: (workspaceId: string, documentId: string, page: number, limit = 20, signal?: AbortSignal) => {
     const [path, scope] = workspacePath(workspaceId, `/documents/${id(documentId)}/chunks`);
-    return callPaginated<DocumentChunk>(path, { ...scope, query: { page, limit } });
+    return callPaginated<DocumentChunk>(path, { ...scope, query: { page, limit }, signal });
   },
 
-  /** E72. The original bytes, not enveloped. Every download is audited. */
+  /** P3-API-13. The original bytes, not enveloped; errors are still JSON. Every download is audited. */
   download: (workspaceId: string, documentId: string) => {
     const [path, scope] = workspacePath(workspaceId, `/documents/${id(documentId)}/download`);
-    return download(path, { ...scope, timeoutMs: DOCUMENT_DOWNLOAD_TIMEOUT_MS });
+    return download(path, { ...scope, timeoutMs: TRANSFER_TIMEOUT_MS });
   },
 
-  /** E73. Send only what changed. Reclassification applies to search immediately. */
+  /** P3-API-14. Send only what changed. Reclassification applies to search immediately. */
   update: (workspaceId: string, documentId: string, body: UpdateDocumentRequest) => {
     const [path, scope] = workspacePath(workspaceId, `/documents/${id(documentId)}`);
     return call<VaultDocument>(path, { ...scope, method: 'PATCH', body });
   },
 
-  /** E74. Allowed when READY (reindex) or FAILED (retry); answers 202. */
+  /** P3-API-15. Only from READY (reindex) or FAILED (retry); answers 202. Otherwise 409 DOCUMENT_PROCESSING. */
   reindex: (workspaceId: string, documentId: string) => {
     const [path, scope] = workspacePath(workspaceId, `/documents/${id(documentId)}/reindex`);
-    return call<VaultDocument>(path, { ...scope, method: 'POST' });
+    return call<VaultDocument>(path, { ...scope, method: 'POST', body: {} });
   },
 
-  /** E75. The content is unrecoverable at once. */
+  /** P3-API-16. The content is unrecoverable at once. A second delete answers 404. */
   remove: (workspaceId: string, documentId: string) => {
     const [path, scope] = workspacePath(workspaceId, `/documents/${id(documentId)}`);
     return call<{ deleted: true }>(path, { ...scope, method: 'DELETE' });
   },
 };
 
-export const ragApi = {
-  /** E76. A mutation: never cached. Has its own 60-per-minute budget. */
-  query: (workspaceId: string, body: RetrievalQuery, signal?: AbortSignal) => {
-    const [path, scope] = workspacePath(workspaceId, '/rag/query');
-    return call<RetrievalResponse>(path, { ...scope, method: 'POST', body, timeoutMs: RETRIEVAL_TIMEOUT_MS, signal });
-  },
-
-  /** E77. Works even when the knowledge layer isn't configured. */
-  accessScope: (workspaceId: string) => {
-    const [path, scope] = workspacePath(workspaceId, '/rag/access-scope');
-    return call<AccessScope>(path, scope);
-  },
-};
-
 export const piiApi = {
-  /** E78. Its own 30-per-minute budget. `reveal` needs pii:reveal and is audited as CRITICAL. */
+  /** P3-API-17. The deny list only for holders of pii:policy:update; `warnings` are always shown. */
+  policy: (workspaceId: string, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, '/pii/policy');
+    return call<PiiPolicy>(path, { ...scope, signal });
+  },
+
+  /**
+   * P3-API-18. A partial update despite PUT. Send `expectedVersion` and only real
+   * changes: every successful save bumps the version and is audited (P3-G05).
+   */
+  updatePolicy: (workspaceId: string, body: UpdatePiiPolicyRequest) => {
+    const [path, scope] = workspacePath(workspaceId, '/pii/policy');
+    return call<PiiPolicy>(path, { ...scope, method: 'PUT', body, localCodes: ['RESOURCE_CONFLICT'] });
+  },
+
+  /** P3-API-19. Grouped by detector; `enabled` follows the current policy. */
+  entityTypes: (workspaceId: string, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, '/pii/entity-types');
+    return call<PiiEntityType[]>(path, { ...scope, signal });
+  },
+
+  /**
+   * P3-API-20. Shares the 30-per-minute privacy budget with the report. The text and
+   * any revealed values are never cached, logged or put in a URL (spec §9.2).
+   */
+  analyze: (workspaceId: string, body: AnalyzeTextRequest, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, '/pii/analyze');
+    return call<AnalyzeResult>(path, { ...scope, method: 'POST', body, signal });
+  },
+
+  /** P3-API-21. Shares the 30-per-minute privacy budget with P3-API-20. `reveal` needs pii:reveal. */
   documentReport: (
     workspaceId: string,
     documentId: string,
@@ -541,16 +585,18 @@ export const piiApi = {
       signal,
     });
   },
+};
 
-  /** Phase 4 endpoint, read for the report's legend. Best effort: failures only lose labels. */
-  entityTypes: (workspaceId: string) => {
-    const [path, scope] = workspacePath(workspaceId, '/pii/entity-types');
-    return call<PiiEntityType[]>(path, { ...scope, globalErrors: false });
+export const ragApi = {
+  /** P3-API-22. A read that is never cached (spec §9.2). Its own 60-per-minute budget. */
+  query: (workspaceId: string, body: RetrievalQuery, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, '/rag/query');
+    return call<RetrievalResponse>(path, { ...scope, method: 'POST', body, timeoutMs: RETRIEVAL_TIMEOUT_MS, signal });
   },
 
-  /** Phase 4 endpoint, read for the "redaction is off" banner. Best effort. */
-  policy: (workspaceId: string) => {
-    const [path, scope] = workspacePath(workspaceId, '/pii/policy');
-    return call<PiiPolicy>(path, { ...scope, globalErrors: false });
+  /** P3-API-23. Needs rag:query, so it is not the clearance source for everyone (spec §3.7). */
+  accessScope: (workspaceId: string, signal?: AbortSignal) => {
+    const [path, scope] = workspacePath(workspaceId, '/rag/access-scope');
+    return call<AccessScope>(path, { ...scope, signal });
   },
 };

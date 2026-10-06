@@ -191,9 +191,12 @@ export const router = createBrowserRouter([
                           import('@/features/knowledge/document/chunks-tab').then((m) => ({ Component: m.DocumentChunksTab })),
                       },
                       {
-                        path: 'pii',
+                        // Spec §5 `…/:documentId/privacy`: the redaction report.
+                        path: 'privacy',
                         lazy: () => import('@/features/knowledge/document/pii-tab').then((m) => ({ Component: m.DocumentPiiTab })),
                       },
+                      // The earlier address of the same tab.
+                      { path: 'pii', element: <Navigate to="../privacy" relative="path" replace /> },
                     ],
                   },
                 ],
@@ -319,6 +322,12 @@ export const router = createBrowserRouter([
                   {
                     path: 'api-keys',
                     lazy: () => import('@/features/settings/api-keys-page').then((m) => ({ Component: m.ApiKeysPage })),
+                  },
+                  {
+                    // Phase 3 §5: redaction policy, entity catalogue, analysis preview.
+                    path: 'privacy',
+                    lazy: () =>
+                      import('@/features/privacy/privacy-settings-page').then((m) => ({ Component: m.PrivacySettingsPage })),
                   },
                   {
                     path: 'danger',
