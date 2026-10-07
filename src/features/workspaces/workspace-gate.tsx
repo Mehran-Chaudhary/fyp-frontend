@@ -172,7 +172,7 @@ function ResolvedWorkspace({
   }
 
   return (
-    <WorkspaceContext.Provider value={workspace}>
+    <WorkspaceContext.Provider key={workspace.id} value={workspace}>
       <AppShell>
         <Outlet />
       </AppShell>

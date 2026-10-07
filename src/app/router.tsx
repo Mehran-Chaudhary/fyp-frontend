@@ -140,6 +140,7 @@ export const router = createBrowserRouter([
               },
               { path: 'security/mfa', element: <Alias to="/account/security" hash="#two-step" /> },
               { path: 'security/sessions', element: <Alias to="/account/security" hash="#devices" /> },
+              { path: 'data', element: <Alias to="/account/privacy" /> },
               {
                 path: 'privacy',
                 lazy: () => import('@/features/account/privacy-page').then((m) => ({ Component: m.PrivacyPage })),
@@ -156,13 +157,22 @@ export const router = createBrowserRouter([
                 index: true,
                 lazy: () => import('@/features/shell/home-page').then((m) => ({ Component: m.HomePage })),
               },
-              ...(['workflows', 'audit'] as const).map((section) => ({
-                path: section,
-                lazy: () =>
-                  import('@/features/shell/section-page').then((m) => ({
-                    Component: () => <m.SectionPage section={section} />,
-                  })),
-              })),
+              { path: 'tools', lazy: () => import('@/features/tools/tools-page').then(m => ({ Component: m.ToolsPage })) },
+              { path: 'tools/new', lazy: () => import('@/features/tools/tool-editor-page').then(m => ({ Component: m.ToolCreatePage })) },
+              { path: 'tools/executions', lazy: () => import('@/features/tools/tool-executions-page').then(m => ({ Component: m.ToolExecutionsPage })) },
+              { path: 'tools/:toolId', lazy: () => import('@/features/tools/tool-detail-page').then(m => ({ Component: m.ToolDetailPage })) },
+              { path: 'tools/:toolId/edit', lazy: () => import('@/features/tools/tool-editor-page').then(m => ({ Component: m.ToolEditPage })) },
+              { path: 'workflows', lazy: () => import('@/features/workflows/workflows-page').then(m => ({ Component: m.WorkflowsPage })) },
+              { path: 'workflows/:workflowId', handle: { wide: true }, lazy: () => import('@/features/workflows/workflow-editor-page').then(m => ({ Component: m.WorkflowEditorPage })) },
+              { path: 'workflows/:workflowId/runs', lazy: () => import('@/features/runs/runs-page').then(m => ({ Component: m.RunsPage })) },
+              { path: 'runs', lazy: () => import('@/features/runs/runs-page').then(m => ({ Component: m.RunsPage })) },
+              { path: 'runs/dead-letters', lazy: () => import('@/features/runs/dead-letters-page').then(m => ({ Component: m.DeadLettersPage })) },
+              { path: 'runs/:runId', handle: { wide: true }, lazy: () => import('@/features/runs/run-detail-page').then(m => ({ Component: m.RunDetailPage })) },
+              { path: 'approvals', lazy: () => import('@/features/runs/approvals-page').then(m => ({ Component: m.ApprovalsPage })) },
+              { path: 'audit', lazy: () => import('@/features/audit/audit-page').then(m => ({ Component: m.AuditPage })) },
+              { path: 'command-centre', lazy: () => import('@/features/analytics/analytics-page').then(m => ({ Component: m.AnalyticsPage })) },
+              { path: 'analytics', lazy: () => import('@/features/analytics/analytics-page').then(m => ({ Component: m.AnalyticsPage })) },
+              { path: 'governance', lazy: () => import('@/features/governance/governance-page').then(m => ({ Component: m.GovernancePage })) },
 
               // ── Agents, models & conversational AI (Phase 4 §5) ──
               {

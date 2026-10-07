@@ -17,6 +17,7 @@ import { UploadWatcher } from '@/features/knowledge/upload/upload-activity';
 import { useUploadsActive } from '@/features/knowledge/upload/use-uploads-active';
 import { primaryRoleLabel, useCan, useWorkspace } from '@/features/workspaces/workspace-context';
 import { WorkspaceSwitcher } from '@/features/workspaces/workspace-switcher';
+import { RealtimeProvider } from '@/features/realtime/realtime-provider';
 import { HOME_NAV, LIVE_PHASE, NAV_GROUPS, PAGE_PARENTS, SECTIONS, STANDALONE_PAGES, SUBSECTION_LABELS, type SectionKey } from './nav';
 import { EmailVerificationBanner, TopBar } from './top-bar';
 
@@ -46,7 +47,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   };
 
   return (
-    <div className="flex min-h-dvh">
+    <RealtimeProvider><div className="flex min-h-dvh">
       <aside
         className={cn(
           'sticky top-0 hidden h-dvh shrink-0 flex-col border-r border-line bg-[#fbfaf7] transition-[width] duration-200 ease-out md:flex',
@@ -84,7 +85,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         )}
       </div>
       <UploadWatcher />
-    </div>
+    </div></RealtimeProvider>
   );
 }
 

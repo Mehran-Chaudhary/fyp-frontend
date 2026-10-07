@@ -178,7 +178,7 @@ export const authApi = {
     call<{ recoveryCodes: string[] }>('/auth/mfa/recovery-codes', { method: 'POST', body }),
 
   /** Phase 5 (account lifecycle controller). A raw file, not an envelope. */
-  exportPersonalData: () => download('/auth/me/export'),
+  exportPersonalData: () => download('/auth/me/export', { timeoutMs: 120_000 }),
 
   /** Phase 5 (account lifecycle controller). A JSON body on a DELETE. */
   eraseAccount: (body: EraseAccountRequest) => call<ErasureOutcome>('/auth/me', { method: 'DELETE', body }),

@@ -50,6 +50,8 @@ type Message =
 type Phase = 'unknown' | 'active' | 'ended';
 
 export const authEvents = createEmitter<{
+  /** A new credential was installed; workspace sockets refresh in place. */
+  'token-changed': undefined;
   /** The session is over (reason: an error code or a sign-out reason slug). */
   'session-ended': { reason: string | undefined };
   /** Another tab shared a token while this tab had no session (it signed in there). */
@@ -104,6 +106,7 @@ channel?.addEventListener('message', (event: MessageEvent<Message>) => {
       expiresAt = message.expiresAt;
       generation += 1;
       uncertain = false;
+      authEvents.emit('token-changed', undefined);
       if (adopted) {
         phase = 'active';
         sessionEpoch += 1;
@@ -162,6 +165,7 @@ function install(token: string, expiresInSeconds: number, startedAt: number, bro
   phase = 'active';
   if (!wasActive) sessionEpoch += 1;
   storage.set(STORAGE_KEYS.hasSession, '1');
+  authEvents.emit('token-changed', undefined);
   if (broadcast) post({ type: 'token', accessToken: token, expiresAt, startedAt });
 }
 

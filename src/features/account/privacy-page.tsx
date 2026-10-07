@@ -19,7 +19,6 @@ import { endSessionLocally, setFarewell } from '@/lib/auth/session';
 import { messageFor } from '@/lib/errors';
 import { useDocumentTitle } from '@/lib/hooks';
 import { meQuery, mfaQuery } from '@/lib/queries';
-import { STORAGE_KEYS, storage } from '@/lib/storage';
 import { toast, toastError } from '@/lib/toast';
 import { downloadBlob, pluralize } from '@/lib/utils';
 import { normaliseTotp, TOTP_PATTERN } from '@/lib/validation/schemas';
@@ -29,7 +28,7 @@ const CONFIRMATION = 'ERASE MY ACCOUNT';
 /** Account → Privacy & data (spec §7.14). */
 export function PrivacyPage() {
   useDocumentTitle('Privacy & data');
-  const [erasureDisabled, setErasureDisabled] = useState(() => storage.get(STORAGE_KEYS.erasureDisabled) === '1');
+  const [erasureDisabled, setErasureDisabled] = useState(false);
 
   return (
     <div className="grid gap-6">
@@ -38,10 +37,9 @@ export function PrivacyPage() {
         description="Your right to a copy of your data and to be forgotten, built into the platform."
       />
       <ExportCard />
-      {erasureDisabled ? null : (
+      {erasureDisabled ? <Callout title="Self-service account erasure is disabled" tone="warning">Contact your deployment administrator to request account erasure.</Callout> : (
         <EraseCard
           onDisabled={() => {
-            storage.set(STORAGE_KEYS.erasureDisabled, '1');
             setErasureDisabled(true);
           }}
         />
@@ -58,8 +56,10 @@ function ExportCard() {
     setDownloading(true);
     try {
       const { blob, filename } = await authApi.exportPersonalData();
+      const exported = await blob.text().then(text => JSON.parse(text) as { truncated?: string[] }).catch(() => null);
       downloadBlob(filename ?? `personal-data-${new Date().toISOString().slice(0, 10)}.json`, blob);
       toast.success('Your data is downloading', { description: filename ?? undefined });
+      if (exported?.truncated?.length) toast.warning('Some export categories reached the export limit', { description: exported.truncated.join(', ') });
     } catch (error) {
       if (isApiError(error) && error.code === 'RATE_LIMIT_EXCEEDED') {
         setRateLimitedUntil(error.retryDeadline());
@@ -261,7 +261,7 @@ function EraseDialog({
                     );
                   })}
                 </ul>
-                <p className="mt-2 opacity-80">Transfer ownership from each workspace's Settings → General.</p>
+                <p className="mt-2 opacity-80">Transfer ownership from each workspace's Settings → Danger zone.</p>
               </Callout>
             ) : null}
 

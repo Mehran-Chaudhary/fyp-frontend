@@ -24,6 +24,7 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/api': { target: backend, changeOrigin: true },
         '/health': { target: backend, changeOrigin: true },
+        '/realtime': { target: backend, changeOrigin: true, ws: true },
       },
     },
     preview: {
@@ -32,6 +33,7 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/api': { target: backend, changeOrigin: true },
         '/health': { target: backend, changeOrigin: true },
+        '/realtime': { target: backend, changeOrigin: true, ws: true },
       },
     },
     test: {

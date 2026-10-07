@@ -1,0 +1,71 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createValidationQueue } from './validation-queue';
+
+afterEach(() => vi.useRealTimers());
+describe('workflow validation queue', () => {
+  it('debounces edits and only validates the final snapshot', async () => {
+    vi.useFakeTimers();
+    const validate = vi.fn(async (value: number) => value * 2);
+    const result = vi.fn();
+    const queue = createValidationQueue({ validate, onResult: result, onError: vi.fn() });
+    queue.submit(1);
+    await vi.advanceTimersByTimeAsync(400);
+    queue.submit(2);
+    await vi.advanceTimersByTimeAsync(599);
+    expect(validate).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(validate).toHaveBeenCalledTimes(1);
+    expect(result).toHaveBeenCalledWith(2, 4);
+    queue.close();
+  });
+  it('never overlaps slow checks and ignores their stale reports', async () => {
+    vi.useFakeTimers();
+    let resolveFirst!: (result: string) => void;
+    const validate = vi.fn((value: string) => value === 'old' ? new Promise<string>((resolve) => { resolveFirst = resolve; }) : Promise.resolve('latest-report'));
+    const result = vi.fn();
+    const queue = createValidationQueue({ validate, onResult: result, onError: vi.fn() });
+    queue.submit('old');
+    await vi.advanceTimersByTimeAsync(600);
+    queue.submit('new');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(validate).toHaveBeenCalledTimes(1);
+    resolveFirst('stale-report');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(result).not.toHaveBeenCalledWith('old', 'stale-report');
+    expect(validate).toHaveBeenCalledTimes(2);
+    expect(result).toHaveBeenCalledWith('new', 'latest-report');
+    queue.close();
+  });
+  it('ignores failures from replaced snapshots and permits the next check', async () => {
+    vi.useFakeTimers();
+    let rejectFirst!: (error: Error) => void;
+    const validate = vi.fn((value: number) => value === 1 ? new Promise<number>((_, reject) => { rejectFirst = reject; }) : Promise.resolve(2));
+    const onError = vi.fn();
+    const onResult = vi.fn();
+    const queue = createValidationQueue({ validate, onResult, onError });
+    queue.submit(1);
+    await vi.advanceTimersByTimeAsync(600);
+    queue.submit(2);
+    rejectFirst(new Error('obsolete failure'));
+    await vi.advanceTimersByTimeAsync(600);
+    expect(onError).not.toHaveBeenCalled();
+    expect(onResult).toHaveBeenCalledWith(2, 2);
+    queue.close();
+  });
+  it('aborts on workspace departure and never delivers an old tenant response', async () => {
+    vi.useFakeTimers();
+    let finish!: (result: string) => void;
+    let signal: AbortSignal | undefined;
+    const onResult = vi.fn();
+    const onError = vi.fn();
+    const queue = createValidationQueue({ validate: (_: string, requestSignal) => { signal = requestSignal; return new Promise<string>((resolve) => { finish = resolve; }); }, onResult, onError });
+    queue.submit('tenant-a');
+    await vi.advanceTimersByTimeAsync(600);
+    queue.close();
+    expect(signal?.aborted).toBe(true);
+    finish('late-tenant-a');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(onResult).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+  });
+});

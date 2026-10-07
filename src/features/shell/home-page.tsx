@@ -54,7 +54,7 @@ export function HomePage() {
         </h1>
         <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted">
           This is your workspace's command center: your team and its roles, the document vault, and the agents that answer from
-          it. Workflows, audit and analytics arrive in Phase 5.
+          it. Build workflows, follow live runs, and govern access, token budgets and activity.
         </p>
       </header>
 
@@ -187,14 +187,14 @@ function GettingStarted() {
           } satisfies ChecklistItem,
         ]
       : []),
-    {
+    ...(can('workflow:read') ? [{
       key: 'workflow',
       icon: <GitBranch />,
       title: 'Design a workflow',
       description: 'Chain agents and tools on a visual canvas.',
-      state: 'soon',
-      phase: 5,
-    },
+      state: 'todo',
+      action: <Button asChild variant="secondary" size="sm"><Link to={`/w/${workspace.slug}/workflows`}>Open workflows</Link></Button>,
+    } satisfies ChecklistItem] : []),
   ];
 
   const available = items.filter((item) => item.state !== 'soon');

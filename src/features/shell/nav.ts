@@ -10,6 +10,7 @@ import {
   Settings,
   UserRoundSearch,
   Users,
+  Wrench, Activity, ClipboardCheck, Gauge, BarChart3,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -18,6 +19,11 @@ export type SectionKey =
   | 'agents'
   | 'playground'
   | 'workflows'
+  | 'tools'
+  | 'runs'
+  | 'approvals'
+  | 'command-centre'
+  | 'governance'
   | 'documents'
   | 'supervision'
   | 'usage'
@@ -42,13 +48,18 @@ export interface SectionDefinition {
  * and make no backend calls (Phase 1 spec §5 "Permission-driven UI"). Phases follow
  * the five-phase delivery plan (docs/FRONTEND_PHASES.md).
  */
-export const LIVE_PHASE = 4;
+export const LIVE_PHASE = 5;
 
 /**
  * Workspace sections. A section shows a "planned" page until its phase ships; the
  * permission that reveals it is final.
  */
 export const SECTIONS: Record<SectionKey, SectionDefinition> = {
+  tools: { key: 'tools', label: 'Tools', icon: Wrench, anyOf: ['tool:read'], phase: 5, group: 'build', summary: 'Define and test governed integrations.', bullets: ['Built-in and HTTP tools', 'Data policy and execution ledger'] },
+  runs: { key: 'runs', label: 'Runs', icon: Activity, anyOf: ['workflow:read'], phase: 5, group: 'main', summary: 'Live workflow execution and recovery.', bullets: ['Step timelines and protected content', 'Cancel, resume, and trace runs'] },
+  approvals: { key: 'approvals', label: 'Approvals', icon: ClipboardCheck, anyOf: ['workflow:approve'], phase: 5, group: 'main', summary: 'Human decisions for workflow steps.', bullets: ['Clearance-aware requests', 'Audited approval and rejection'] },
+  'command-centre': { key: 'command-centre', label: 'Command Centre', icon: BarChart3, anyOf: ['usage:read'], phase: 5, group: 'govern', summary: 'Workspace activity and performance.', bullets: ['Usage, runs, tools and documents', 'Trends, rankings and security events'] },
+  governance: { key: 'governance', label: 'Governance', icon: Gauge, anyOf: ['usage:read', 'quota:manage', 'agent:read', 'llm:invoke', 'agent:execute'], phase: 5, group: 'govern', summary: 'Token quotas and agent circuit breakers.', bullets: ['Live consumption and quota history', 'Review and reset paused agents'] },
   chat: {
     key: 'chat',
     label: 'Chat',
@@ -220,9 +231,9 @@ export const PAGE_PARENTS: Record<string, { parent: SectionKey; label: string }>
 
 /** `label: null`: the items sit right under the dashboard, without a heading. */
 export const NAV_GROUPS: Array<{ key: 'main' | 'build' | 'govern'; label: string | null; sections: SectionKey[] }> = [
-  { key: 'main', label: null, sections: ['chat'] },
-  { key: 'build', label: 'Build', sections: ['agents', 'playground', 'workflows', 'documents'] },
-  { key: 'govern', label: 'Govern', sections: ['supervision', 'usage', 'audit', 'team', 'settings'] },
+  { key: 'main', label: null, sections: ['chat', 'runs', 'approvals'] },
+  { key: 'build', label: 'Build', sections: ['agents', 'playground', 'tools', 'workflows', 'documents'] },
+  { key: 'govern', label: 'Govern', sections: ['command-centre', 'supervision', 'usage', 'governance', 'audit', 'team', 'settings'] },
 ];
 
 /** Friendly names for the permission catalogue's categories. */
