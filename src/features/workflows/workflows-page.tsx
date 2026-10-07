@@ -32,11 +32,15 @@ function WorkflowDirectory() {
   const workspace = useWorkspace();
   const can = useCan();
   const [params, setParams] = useSearchParams();
-  const [search, setSearch] = useState(params.get('search') ?? '');
+  const rawSearch = params.get('search') ?? '';
+  const [search, setSearch] = useState(rawSearch);
+  const [syncedSearch, setSyncedSearch] = useState(rawSearch);
+  if (syncedSearch !== rawSearch) { setSearch(rawSearch); setSyncedSearch(rawSearch); }
   const debounced = useDebouncedValue(search.trim(), 300);
   const rawStatus = params.get('status');
   const status = (['DRAFT', 'ACTIVE', 'ARCHIVED'].includes(rawStatus ?? '') ? rawStatus : undefined) as WorkflowStatus | undefined;
-  const page = Math.max(1, Number(params.get('page')) || 1);
+  const rawPage = Number(params.get('page'));
+  const page = Number.isSafeInteger(rawPage) && rawPage > 0 ? rawPage : 1;
   const filters = { page, limit: 18, search: debounced || undefined, status };
   const query = useQuery({ queryKey: workflowKeys.list(workspace.id, filters), queryFn: ({ signal }) => workflowsApi.list(workspace.id, filters, signal) });
   const [createOpen, setCreateOpen] = useState(false);

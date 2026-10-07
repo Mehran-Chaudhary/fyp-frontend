@@ -65,7 +65,7 @@ function QuotaDirectory() {
     <Callout tone="neutral" title="How budgets are enforced">Every applicable control is checked before a call starts, including the estimated prompt and maximum output. Daily and monthly budgets reset at UTC calendar boundaries. Minute limits refill continuously.</Callout>
     {editor ? <QuotaEditor key={editor === 'new' ? 'new' : editor.id} quota={editor === 'new' ? null : editor} onClose={() => setEditor(null)} /> : null}
     {history ? <QuotaHistory quota={history} onClose={() => setHistory(null)} /> : null}
-    <ConfirmDialog open={Boolean(removing)} onOpenChange={(open) => { if (!open) setRemoving(null); }} title="Remove this quota?" description={`Removing “${removing?.label ?? (removing ? PERIOD_LABEL[removing.period] : 'quota')}” relaxes a control. Calls are still checked against other applicable quotas. This change is audited.`} icon={<Trash2 />} tone="danger" confirmLabel="Remove quota" pending={remove.isPending} error={remove.isError ? messageFor(remove.error) : null} onConfirm={() => { if (removing) remove.mutate(removing); }} />
+    <ConfirmDialog open={Boolean(removing)} onOpenChange={(open) => { if (!open) setRemoving(null); }} title="Remove this quota?" description={`Removing “${removing?.label ?? (removing ? PERIOD_LABEL[removing.period] : 'quota')}” relaxes a control. Calls are still checked against other applicable quotas. This change is audited.`} icon={<Trash2 />} tone="danger" confirmLabel="Remove quota" pending={remove.isPending} confirmDisabled={!can('quota:manage')} error={remove.isError ? messageFor(remove.error) : null} onConfirm={() => { if (removing && can('quota:manage')) remove.mutate(removing); }} />
   </>;
 }
 

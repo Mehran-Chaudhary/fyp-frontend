@@ -44,7 +44,7 @@ export function CircuitsPanel() {
         ['Agent ID', detail.data.agentId], ['State', <Badge tone={detail.data.state === 'open' ? 'warning' : 'success'}>{detail.data.state}</Badge>], ['Reason', detail.data.reason ? reasonText(detail.data.reason) : 'No active incident'], ['Opened', formatDateTime(detail.data.openedAt)], ['Retry at', formatDateTime(detail.data.retryAt)],
       ]} />{detail.data.state === 'open' ? <Countdown retryAt={detail.data.retryAt} /> : null}</> : null}</DrawerSection>
     </Drawer>
-    <ConfirmDialog open={Boolean(resetting)} onOpenChange={(open) => { if (!open) setResetting(null); }} title="Close this circuit now?" description={`“${resetting ? name(resetting) : 'This agent'}” will be allowed to make calls again immediately. Review its configuration and the cause of the pause first. This action is audited.`} icon={<CircuitBoard />} tone="warning" confirmLabel="Close circuit" pending={reset.isPending} error={reset.isError ? messageFor(reset.error) : null} onConfirm={() => { if (resetting) reset.mutate(resetting); }} />
+    <ConfirmDialog open={Boolean(resetting)} onOpenChange={(open) => { if (!open) setResetting(null); }} title="Close this circuit now?" description={`“${resetting ? name(resetting) : 'This agent'}” will be allowed to make calls again immediately. Review its configuration and the cause of the pause first. This action is audited.`} icon={<CircuitBoard />} tone="warning" confirmLabel="Close circuit" pending={reset.isPending} confirmDisabled={!canReset} error={reset.isError ? messageFor(reset.error) : null} onConfirm={() => { if (resetting && canReset) reset.mutate(resetting); }} />
   </CardBody></Card>;
 }
 

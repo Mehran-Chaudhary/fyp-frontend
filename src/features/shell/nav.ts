@@ -58,7 +58,7 @@ export const SECTIONS: Record<SectionKey, SectionDefinition> = {
   tools: { key: 'tools', label: 'Tools', icon: Wrench, anyOf: ['tool:read'], phase: 5, group: 'build', summary: 'Define and test governed integrations.', bullets: ['Built-in and HTTP tools', 'Data policy and execution ledger'] },
   runs: { key: 'runs', label: 'Runs', icon: Activity, anyOf: ['workflow:read'], phase: 5, group: 'main', summary: 'Live workflow execution and recovery.', bullets: ['Step timelines and protected content', 'Cancel, resume, and trace runs'] },
   approvals: { key: 'approvals', label: 'Approvals', icon: ClipboardCheck, anyOf: ['workflow:approve'], phase: 5, group: 'main', summary: 'Human decisions for workflow steps.', bullets: ['Clearance-aware requests', 'Audited approval and rejection'] },
-  'command-centre': { key: 'command-centre', label: 'Command Centre', icon: BarChart3, anyOf: ['usage:read'], phase: 5, group: 'govern', summary: 'Workspace activity and performance.', bullets: ['Usage, runs, tools and documents', 'Trends, rankings and security events'] },
+  'command-centre': { key: 'command-centre', label: 'Command Centre', icon: BarChart3, anyOf: ['usage:read', 'audit:read', 'security:read'], phase: 5, group: 'govern', summary: 'Workspace activity and performance.', bullets: ['Usage, runs, tools and documents', 'Trends, rankings and security events'] },
   governance: { key: 'governance', label: 'Governance', icon: Gauge, anyOf: ['usage:read', 'quota:manage', 'agent:read', 'llm:invoke', 'agent:execute'], phase: 5, group: 'govern', summary: 'Token quotas and agent circuit breakers.', bullets: ['Live consumption and quota history', 'Review and reset paused agents'] },
   chat: {
     key: 'chat',

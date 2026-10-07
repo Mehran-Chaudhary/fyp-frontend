@@ -21,7 +21,7 @@ export const EDITOR_SECTIONS = [
   { id: 'memory', label: 'Memory', icon: Brain, fields: ['maxMessages', 'maxHistoryTokens'] },
   { id: 'answers', label: 'Answers', icon: ShieldCheck, fields: ['grounding', 'citations'] },
   { id: 'access', label: 'Access', icon: Users, fields: ['accessMode', 'allowedRoleIds'] },
-  { id: 'tools', label: 'Tools', icon: Wrench, fields: [] },
+  { id: 'tools', label: 'Tools', icon: Wrench, fields: ['toolIds', 'maxIterations'] },
 ] as const satisfies ReadonlyArray<{ id: string; label: string; icon: unknown; fields: readonly AgentFormField[] }>;
 
 export type EditorSectionId = (typeof EDITOR_SECTIONS)[number]['id'];

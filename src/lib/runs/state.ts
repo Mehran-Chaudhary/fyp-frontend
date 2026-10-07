@@ -41,6 +41,23 @@ export function applyRunEvent(run: RunDetail, event: RealtimeEvent): RunDetail {
     }),
   };
 }
+/** Keep only metadata received during an in-flight REST request, then fold it onto that snapshot. */
+export function createRunEventJournal() {
+  let serial = 0;
+  const events: Array<{ serial: number; event: RealtimeEvent }> = [];
+  return {
+    mark: () => serial,
+    record(event: RealtimeEvent) {
+      events.push({ serial: ++serial, event });
+      if (events.length > 1000) events.shift();
+    },
+    merge(run: RunDetail, after: number) {
+      return events.filter(entry => entry.serial > after && entry.event.runId === run.id)
+        .sort((a, b) => compareEventIds(a.event.id, b.event.id)).reduce((snapshot, entry) => applyRunEvent(snapshot, entry.event), run);
+    },
+    clear() { events.length = 0; },
+  };
+}
 const ERROR_TEXT: Record<string, string> = {
   WORKFLOW_PRINCIPAL_REVOKED: 'The person who started this run no longer has permission to run it.',
   WORKFLOW_TIMEOUT: 'This run passed its time limit. It can be resumed.',

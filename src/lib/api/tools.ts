@@ -20,9 +20,9 @@ export const toolsApi = {
     const [path, context] = workspacePath(ws, `/tools/${encodeURIComponent(id)}`);
     return call<Tool>(path, { ...context, method: 'PATCH', body, signal, localCodes: ['RESOURCE_CONFLICT', 'TOOL_DEFINITION_INVALID', 'TOOL_NAME_TAKEN'] });
   },
-  delete: (ws: string, id: string) => {
+  delete: (ws: string, id: string, signal?: AbortSignal) => {
     const [path, context] = workspacePath(ws, `/tools/${encodeURIComponent(id)}`);
-    return call<{ deleted: true }>(path, { ...context, method: 'DELETE' });
+    return call<{ deleted: true }>(path, { ...context, method: 'DELETE', signal });
   },
   test: (ws: string, id: string, args: Record<string, unknown>, signal?: AbortSignal) => {
     const [path, context] = workspacePath(ws, `/tools/${encodeURIComponent(id)}/test`);

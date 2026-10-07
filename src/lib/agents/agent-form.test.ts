@@ -63,6 +63,18 @@ const draftOf = (form: ReturnType<typeof formFromAgent>) => {
 };
 
 describe('agentPatch (P4-API-04, Appendix A)', () => {
+  it('versions changed tool grants without resending unchanged grants', () => {
+    const loaded = { ...scratch, config: { ...scratch.config, tools: { toolIds: ['tool-b', 'tool-a'], maxIterations: 4 } } };
+    const untouched = formFromAgent(loaded);
+    expect(agentPatch(loaded, draftOf({ ...untouched, toolIds: ['tool-a', 'tool-b'] }))).toBeNull();
+    const rounds = agentPatch(loaded, draftOf({ ...untouched, maxIterations: 2 }))!;
+    expect(rounds).toEqual({ expectedVersion: 1, tools: { maxIterations: 2 } });
+    expect(createsVersion(rounds)).toBe(true);
+    expect(patchSections(rounds)).toEqual(['Tools']);
+    const removed = agentPatch(loaded, draftOf({ ...untouched, toolIds: [] }));
+    expect(removed).toEqual({ expectedVersion: 1, tools: { toolIds: [] } });
+    expect(loaded.config.tools.toolIds).toEqual(['tool-b', 'tool-a']);
+  });
   it('is null when nothing changed, whatever the key order of parameters', () => {
     expect(agentPatch(scratch, draftOf(formFromAgent(scratch)))).toBeNull();
   });
@@ -102,6 +114,12 @@ describe('agentPatch (P4-API-04, Appendix A)', () => {
 });
 
 describe('parseAgentForm (spec §6)', () => {
+  it('sends explicit grants at creation and maps nested grant errors', () => {
+    const form = { ...emptyAgentForm(), name: 'Tool user', toolIds: ['tool-a'], maxIterations: 3 };
+    expect(createInput(draftOf(form)).tools).toEqual({ toolIds: ['tool-a'], maxIterations: 3 });
+    expect(mapServerFieldErrors({ 'tools.toolIds.0': 'Tool unavailable', 'tools.maxIterations': 'Platform cap exceeded' })).toEqual({ errors: { toolIds: 'Tool unavailable', maxIterations: 'Platform cap exceeded' }, rest: [] });
+    expect(parseAgentForm({ ...form, toolIds: Array.from({ length: 21 }, (_, i) => String(i)), maxIterations: 1.5 }).errors).toMatchObject({ toolIds: expect.any(String), maxIterations: expect.any(String) });
+  });
   it('requires a name and checks ranges', () => {
     const { errors, draft } = parseAgentForm({
       ...emptyAgentForm(),

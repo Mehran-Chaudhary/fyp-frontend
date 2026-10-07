@@ -24,8 +24,8 @@ import { RunContent } from './run-content';
 
 export function RunDetailPage() {
   const { runId = '' } = useParams(); const ws = useWorkspace(); const can = useCan();
-  const query = useQuery({ queryKey: runKeys.detail(ws.id, runId), queryFn: ({ signal }) => runsApi.detail(ws.id, runId, signal), enabled: can('workflow:read'), refetchInterval: query => query.state.data && isRunActive(query.state.data.status) ? 30_000 : false });
-  const { session } = useRealtime();
+  const { session, journal } = useRealtime();
+  const query = useQuery({ queryKey: runKeys.detail(ws.id, runId), queryFn: async ({ signal }) => { const mark = journal.mark(); return journal.merge(await runsApi.detail(ws.id, runId, signal), mark); }, enabled: can('workflow:read'), refetchInterval: query => query.state.data && isRunActive(query.state.data.status) ? 30_000 : false });
   useEffect(() => can('workflow:read') ? session?.watch(runId) : undefined, [session, runId, can]);
   if (!can('workflow:read')) return <NoAccessState permissions={['workflow:read']} workspaceName={ws.name} />;
   if (query.isPending) return <div className="py-20"><Spinner /></div>;

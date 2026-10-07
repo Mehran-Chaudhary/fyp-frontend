@@ -21,6 +21,8 @@ export function createRealtimeSession(ws: string, handlers: RealtimeHandlers): R
   let ready = false;
   let revoked = false;
   let refreshedHandshake = false;
+  let recovering = false;
+  let pushingToken = false;
   let roomCursor = '0-0';
   let lastToken = '';
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -43,24 +45,27 @@ export function createRealtimeSession(ws: string, handlers: RealtimeHandlers): R
     else handlers.event(event);
   };
   const replay = (events: Array<RealtimeEvent | NotificationEvent>) => [...events].sort((a, b) => compareEventIds(a.id, b.id)).forEach(deliver);
-  const subscribe = async (runId: string, cursor: string) => {
+  const subscribe = async (runId: string, cursor: string, reconcileAfter = true) => {
     const ack = await emit<SubscribeAck>('subscribe', { runId, lastEventId: cursor });
     if (closed || !runs.has(runId)) return;
     if (ack.ok) replay(ack.events);
     // A refusal must reconcile and evict content through the REST visibility check.
-    handlers.reconcile();
+    if (reconcileAfter) handlers.reconcile();
   };
   const recover = () => {
-    if (!ready || closed) return;
+    if (!ready || closed || recovering) return;
+    recovering = true;
     const lastEventId = roomCursor;
     const snapshot = [...runs].map(([id, state]) => [id, state.cursor] as const);
     void (async () => {
       // Limit outbound messages: one current screen normally watches one run.
-      for (const [id, cursor] of snapshot) await subscribe(id, cursor);
-      const ack = await emit<ResumeAck>('resume', { lastEventId });
-      if (closed) return;
-      if (ack.ok) replay(ack.events);
-      handlers.reconcile();
+      try {
+        for (const [id, cursor] of snapshot) await subscribe(id, cursor, false);
+        const ack = await emit<ResumeAck>('resume', { lastEventId });
+        if (closed) return;
+        if (ack.ok) replay(ack.events);
+        handlers.reconcile();
+      } finally { recovering = false; }
     })();
   };
   const fail = (status: LiveStatus, reason: string) => {
@@ -77,14 +82,18 @@ export function createRealtimeSession(ws: string, handlers: RealtimeHandlers): R
     refreshTimer = setTimeout(() => { void pushToken(); }, Math.max(1000, expiry - Date.now() - 25_000));
   };
   const pushToken = async () => {
+    if (pushingToken || closed || !ready) return;
+    pushingToken = true;
     try {
       const token = await getAccessToken();
       if (closed || !token || !ready) return;
       lastToken = token;
+      if (socket) socket.auth = { token, organizationId: ws };
       const ack = await emit<RefreshAck>('auth:refresh', { token });
       if (ack.ok) scheduleRefresh(ack.expiresAt);
       else fail('offline', 'The live connection needs to be reconnected.');
     } catch { fail('offline', 'Session renewal paused live updates. HTTP refresh remains available.'); }
+    finally { pushingToken = false; }
   };
   const connect = async (forceRefresh = false) => {
     try {
@@ -110,7 +119,14 @@ export function createRealtimeSession(ws: string, handlers: RealtimeHandlers): R
       });
       socket.on('event', deliver);
       socket.on('notification', deliver);
-      socket.on('disconnect', () => { if (!closed && !revoked) { ready = false; handlers.status('reconnecting', 'Reconnecting live updates. REST remains available.'); } });
+      socket.on('disconnect', reason => {
+        if (closed || revoked) return;
+        ready = false;
+        clearTimeout(refreshTimer);
+        handlers.status(reason === 'io server disconnect' ? 'offline' : 'reconnecting', reason === 'io server disconnect' ? 'The server closed live updates. Reconnect to recover.' : 'Reconnecting live updates. REST remains available.');
+        handlers.reconcile();
+      });
+      socket.io.on('reconnect_failed', () => fail('offline', 'Live reconnection paused after repeated failures. Reconnect when the backend is available.'));
       socket.on('connect_error', (error: Error & { data?: { code?: string } }) => {
         const code = error.data?.code;
         if (code && REFRESH_CODES.has(code) && !refreshedHandshake) { refreshedHandshake = true; void connect(true); }
@@ -148,6 +164,6 @@ export function createRealtimeSession(ws: string, handlers: RealtimeHandlers): R
         if (ready) void emit('unsubscribe', { runId });
       };
     }, recover,
-    close() { closed = true; clearTimeout(refreshTimer); stopAuth(); stopToken(); document.removeEventListener('visibilitychange', visibility); socket?.removeAllListeners(); socket?.disconnect(); runs.clear(); seen.clear(); },
+    close() { closed = true; clearTimeout(refreshTimer); stopAuth(); stopToken(); document.removeEventListener('visibilitychange', visibility); socket?.io.removeAllListeners('reconnect_failed'); socket?.removeAllListeners(); socket?.disconnect(); runs.clear(); seen.clear(); },
   };
 }

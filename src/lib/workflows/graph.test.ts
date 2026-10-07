@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ancestors, canLoop, changeRuleOperator, nextNodeId, normalizeGraph, sourceHandles, templateSuggestions } from './graph';
+import { ancestors, canLoop, changeRuleOperator, jsonDraftErrors, loopBodyExecutions, nextNodeId, normalizeGraph, settingsErrors, sourceHandles, templateSuggestions } from './graph';
 import type { WorkflowGraph } from './types';
 
 const graph: WorkflowGraph = {
@@ -45,5 +45,22 @@ describe('workflow graph safety', () => {
     expect(sourceHandles({ id: 'r', type: 'retrieval', data: {} })).toContain('error');
     expect(sourceHandles({ id: 's', type: 'supervisor', data: {} })).toContain('error');
     expect(sourceHandles(graph.nodes[2])).toEqual(['again', 'else']);
+  });
+  it('counts the initial loop body execution before the bounded repeats', () => {
+    expect(loopBodyExecutions(2)).toBe(3);
+    expect(loopBodyExecutions(1)).toBe(2);
+  });
+  it('rejects invalid resource limits without assuming deployment-specific ceilings', () => {
+    expect(settingsErrors({ maxSteps: 1, maxTokens: 999, runTimeoutMs: 999 })).toEqual({ maxSteps: expect.any(String), maxTokens: expect.any(String), runTimeoutMs: expect.any(String) });
+    expect(settingsErrors({ maxSteps: 10001, maxTokens: Number.NaN, runTimeoutMs: Infinity })).toEqual({ maxSteps: expect.any(String), maxTokens: expect.any(String), runTimeoutMs: expect.any(String) });
+    expect(settingsErrors({ maxSteps: 2.5 })).toHaveProperty('maxSteps');
+    expect(settingsErrors({ maxSteps: 10000, maxTokens: 100000000, runTimeoutMs: 1800000 })).toEqual({});
+    expect(settingsErrors({})).toEqual({});
+  });
+  it('detects incomplete JSON to prevent silently saving the previous valid value', () => {
+    expect(jsonDraftErrors({ 'tool:arguments': '{"amount":', 'agent:outputSchema': '{}' })).toEqual([['tool:arguments', '{"amount":']]);
+  });
+  it('keeps invalid condition drafts inspectable when their rule collection is malformed', () => {
+    expect(sourceHandles({ id: 'bad', type: 'condition', data: { rules: 'unfinished' } })).toEqual(['else']);
   });
 });

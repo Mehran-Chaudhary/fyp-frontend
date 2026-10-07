@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { History, Pencil, Trash2 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { toast } from 'sonner';
 import { NoAccessState } from '@/components/feedback/no-access';
@@ -33,19 +33,24 @@ function Detail() {
   const [deleting, setDeleting] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
+  const controller = useRef<AbortController | null>(null);
+  useEffect(() => () => controller.current?.abort(), []);
   useDocumentTitle(query.data?.displayName ?? 'Tool');
   const remove = async () => {
     if (pending) return;
     setPending(true); setError(undefined);
+    const current = new AbortController();
+    controller.current = current;
     try {
-      await toolsApi.delete(ws.id, toolId);
+      await toolsApi.delete(ws.id, toolId, current.signal);
+      if (current.signal.aborted) return;
       client.removeQueries({ queryKey: toolKeys.detail(ws.id, toolId) });
       await client.invalidateQueries({ queryKey: toolKeys.lists(ws.id) });
       await client.invalidateQueries({ queryKey: ['ws', ws.id, 'agent-tools'] });
       toast.success('Tool deleted');
       navigate(`/w/${ws.slug}/tools`);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not delete the tool.'); }
-    finally { setPending(false); }
+    } catch (cause) { if (!current.signal.aborted) setError(cause instanceof Error ? cause.message : 'Could not delete the tool.'); }
+    finally { if (!current.signal.aborted) setPending(false); }
   };
   if (query.isPending) return <Skeleton className="h-96 rounded-xl" />;
   if (query.isError) return <Card><ErrorState error={query.error} onRetry={() => void query.refetch()} /></Card>;

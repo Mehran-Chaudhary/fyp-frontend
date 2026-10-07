@@ -114,10 +114,12 @@ function OverviewSections({ data }: { data: AnalyticsOverview }) {
 }
 
 function TrendChart({ data }: { data: Timeseries }) {
-  const width = 880; const height = 170; const { segments, maximum } = seriesSegments(data.points, width, height);
+  const width = 880; const height = 170; const { segments } = seriesSegments(data.points, width, height);
+  const observations = data.points.flatMap((point) => point.value === null ? [] : [point.value]);
+  const peak = observations.length ? Math.max(...observations) : null;
   const label = METRICS.find((item) => item.value === data.metric)?.label ?? data.metric;
   return <div>
-    <div className="flex items-center justify-between text-xs text-muted"><span>{label}</span><span>Peak {maximum === 1 && data.points.every((point) => !point.value) ? '0' : number(maximum)}</span></div>
+    <div className="flex items-center justify-between text-xs text-muted"><span>{label}</span><span>{peak === null ? 'No observations' : `Peak ${number(peak)}`}</span></div>
     {!segments.length ? <EmptyState icon={<Activity />} title="No observations in this window" description="Percentiles appear after calls have completed." /> : <svg viewBox={`-5 -15 ${width + 10} ${height + 40}`} role="img" aria-label={`${label} over time. Detailed values in the data table below.`} className="mt-4 h-56 w-full overflow-visible">
       <title>{label}, {data.interval === 'day' ? 'daily' : 'hourly'} UTC buckets</title>
       {[0, 0.5, 1].map((fraction) => <line key={fraction} x1={0} x2={width} y1={height * fraction} y2={height * fraction} stroke="currentColor" className="text-line" strokeDasharray="4 5" />)}

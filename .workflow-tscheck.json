@@ -1,1 +1,0 @@
-{"extends":"./tsconfig.app.json","compilerOptions":{"tsBuildInfoFile":"./node_modules/.tmp/workflow-check.tsbuildinfo"},"include":["src/features/workflows/**/*.tsx","src/lib/workflows/**/*.ts","src/lib/api/workflows.ts","src/vite-env.d.ts"]}

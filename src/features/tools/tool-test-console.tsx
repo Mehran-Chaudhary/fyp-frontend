@@ -50,6 +50,7 @@ export function ToolTestConsole({ tool }: { tool: Tool }) {
     }
   };
   const switchMode = (next: 'form' | 'json') => {
+    if (pending) return;
     if (next === 'json') {
       try { setRaw(JSON.stringify(formArguments(), null, 2)); setError(undefined); } catch (cause) { setError(cause); return; }
     } else {

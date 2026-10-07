@@ -23,6 +23,8 @@ export const AGENT_LIMITS = {
   changeNote: 500,
   knowledgeBases: 20,
   roles: 50,
+  tools: 20,
+  toolIterations: [0, 32],
   stopSequences: 4,
   stopLength: 32,
   temperature: [0, 2],
@@ -252,6 +254,8 @@ export function parseAgentForm(form: AgentForm): { errors: AgentFormErrors; draf
 
   if (form.knowledgeBaseIds.length > L.knowledgeBases) errors.knowledgeBaseIds = `Attach at most ${L.knowledgeBases} knowledge bases.`;
   if (form.allowedRoleIds.length > L.roles) errors.allowedRoleIds = `Choose at most ${L.roles} roles.`;
+  if (form.toolIds.length > L.tools) errors.toolIds = `Grant at most ${L.tools} tools.`;
+  if (!Number.isInteger(form.maxIterations) || form.maxIterations < L.toolIterations[0] || form.maxIterations > L.toolIterations[1]) errors.maxIterations = 'Use 0–32 whole tool rounds; the platform may impose a lower cap.';
   if (form.accessMode === 'RESTRICTED' && form.allowedRoleIds.length === 0) {
     errors.allowedRoleIds = 'Choose at least one role, or nobody will be able to use this agent once it is published.';
   }
@@ -339,7 +343,7 @@ export function draftFrom(agent: Pick<Agent, 'name' | 'description' | 'instructi
  * The PATCH body for a draft: only what changed, plus `expectedVersion`. Null when
  * nothing changed. `parameters` is sent whole (the server replaces it), every other
  * section as changed keys (the server merges one level deep). Hidden knowledge bases
- * are never sent: the server keeps them. Tools are never sent in Phase 4.
+ * are never sent: the server keeps them. Tool grants are sent only when changed.
  */
 export function agentPatch(loaded: Agent, draft: AgentDraft, changeNote?: string): UpdateAgentInput | null {
   const before = draftFrom(loaded);
@@ -366,6 +370,8 @@ export function agentPatch(loaded: Agent, draft: AgentDraft, changeNote?: string
   if (memory) patch.memory = memory;
   if (d.grounding !== b.grounding) patch.grounding = d.grounding;
   if (d.citations !== b.citations) patch.citations = d.citations;
+  const tools = changedKeys({ ...b.tools, toolIds: sorted(b.tools.toolIds) }, { ...d.tools, toolIds: sorted(d.tools.toolIds) });
+  if (tools) patch.tools = tools;
 
   if (draft.accessMode !== before.accessMode) patch.accessMode = draft.accessMode;
   if (!sameSet(draft.allowedRoleIds, before.allowedRoleIds)) patch.allowedRoleIds = [...draft.allowedRoleIds];
@@ -402,6 +408,7 @@ export function patchSections(patch: UpdateAgentInput): string[] {
   if (patch.memory) out.push('Memory');
   if (patch.grounding !== undefined || patch.citations !== undefined) out.push('Answers');
   if (patch.accessMode !== undefined || patch.allowedRoleIds) out.push('Access');
+  if (patch.tools) out.push('Tools');
   return out;
 }
 
@@ -428,6 +435,8 @@ export function createInput(draft: AgentDraft): CreateAgentInput {
   if (memory) body.memory = memory;
   if (d.grounding !== b.grounding) body.grounding = d.grounding;
   if (d.citations !== b.citations) body.citations = d.citations;
+  const tools = changedKeys(b.tools, d.tools);
+  if (tools) body.tools = tools;
   if (draft.accessMode !== 'WORKSPACE') body.accessMode = draft.accessMode;
   if (draft.allowedRoleIds.length) body.allowedRoleIds = [...draft.allowedRoleIds];
   return body;
@@ -482,6 +491,8 @@ export const SERVER_FIELD_TO_FORM: Readonly<Record<string, AgentFormField>> = {
   citations: 'citations',
   accessMode: 'accessMode',
   allowedRoleIds: 'allowedRoleIds',
+  'tools.toolIds': 'toolIds',
+  'tools.maxIterations': 'maxIterations',
 };
 
 /** Maps `details.fields` of a 422 to form fields; the rest is returned under `_form`. */

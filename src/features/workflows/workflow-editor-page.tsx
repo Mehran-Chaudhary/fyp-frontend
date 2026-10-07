@@ -22,8 +22,10 @@ import { Select } from '@/components/ui/select';
 import { RunStartDialog } from '@/features/runs/run-start-dialog';
 import { useCan, useWorkspace } from '@/features/workspaces/workspace-context';
 import { ApiError } from '@/lib/api/errors';
+import { runKeys } from '@/lib/api/runs';
 import { workflowKeys, workflowsApi } from '@/lib/api/workflows';
 import { useDocumentTitle } from '@/lib/hooks';
+import { memberNamesQuery } from '@/lib/queries';
 import { toast, toastError } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { canLoop, defaultNodeData, jsonDraftErrors, loopBodyExecutions, nextNodeId, normalizeGraph, settingsErrors, sourceHandles } from '@/lib/workflows/graph';
@@ -122,7 +124,9 @@ function WorkflowEditor({ source }: { source: Workflow }) {
   };
   const refresh = () => {
     void client.invalidateQueries({ queryKey: workflowKeys.all(workspace.id) });
-    void client.invalidateQueries({ queryKey: ['ws', workspace.id, 'workflow-runs'] });
+    void client.invalidateQueries({ queryKey: runKeys.list(workspace.id) });
+    void client.invalidateQueries({ queryKey: ['ws', workspace.id, 'run'] });
+    void client.invalidateQueries({ queryKey: runKeys.approvals(workspace.id) });
   };
   const reload = async () => {
     setBusy('reload');
@@ -154,6 +158,7 @@ function WorkflowEditor({ source }: { source: Workflow }) {
         await workflowsApi.delete(workspace.id, workflow.id);
         client.removeQueries({ queryKey: workflowKeys.detail(workspace.id, workflow.id) });
         client.removeQueries({ queryKey: workflowKeys.versions(workspace.id, workflow.id) });
+        client.removeQueries({ queryKey: [...workflowKeys.all(workspace.id), 'version', workflow.id] });
         refresh(); allowNavigation(); navigate(`/w/${workspace.slug}/workflows`); toast.success('Workflow deleted'); return;
       }
       const next = type === 'publish' ? await workflowsApi.publish(workspace.id, workflow.id, version) : type === 'archive' ? await workflowsApi.archive(workspace.id, workflow.id) : await workflowsApi.restore(workspace.id, workflow.id, version);
@@ -231,7 +236,7 @@ function WorkflowEditor({ source }: { source: Workflow }) {
       </div>
     </div>
     {!editable && <p className="rounded-lg border border-line bg-well px-3 py-2 text-xs text-muted">Read-only canvas. Editing requires workflow:update.</p>}
-    {(newer || conflict !== null) && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning-200 bg-warning-50 p-3 text-xs text-warning-700"><span>A newer version exists: v{conflict ?? source.currentVersion}. Your unsaved work is still here.</span><div className="flex gap-2"><Button size="xs" variant="secondary" disabled={!!busy} onClick={() => dirty ? setConfirm({ type: 'discard' }) : void reload()}>Reload theirs</Button>{editable && dirty && <Button size="xs" disabled={!!busy || !!invalidJson.length || hasInvalidSettings} onClick={() => void save(conflict ?? source.currentVersion)}>Keep mine and save on top</Button>}</div></div>}
+    {(newer || conflict !== null) && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning-200 bg-warning-50 p-3 text-xs text-warning-700"><span>A newer version exists: v{conflict ?? source.currentVersion}. Your unsaved work is still here.</span><div className="flex flex-wrap gap-2"><Button size="xs" variant="secondary" disabled={!!busy} onClick={() => dirty ? setConfirm({ type: 'discard' }) : void reload()}>Reload theirs</Button>{editable && dirty && <Button size="xs" disabled={!!busy || !!invalidJson.length || hasInvalidSettings} onClick={() => void save(conflict ?? source.currentVersion)}>Keep mine and save on top</Button>}</div></div>}
     <FormError message={failure ?? undefined} />
     {invalidJson.length > 0 && <div className="rounded-lg border border-danger-200 bg-danger-50 p-3 text-xs text-danger-700">Complete JSON in {invalidJson.map(([name]) => name).join(', ')} before saving. The incomplete text is kept in memory.</div>}
     {hasInvalidSettings && <div className="rounded-lg border border-danger-200 bg-danger-50 p-3 text-xs text-danger-700">Fix workflow limits before saving. {Object.values(invalidSettings).join(' ')}<Button size="xs" variant="ghost" onClick={() => setPanel('settings')}>Open settings</Button></div>}
@@ -280,11 +285,12 @@ function VersionsPanel({ workflow, busy, dirty, onRestore, onPublish }: { workfl
   const can = useCan();
   const [page, setPage] = useState(1);
   const [inspect, setInspect] = useState<number | null>(null);
+  const names = useQuery({ ...memberNamesQuery(workspace.id), enabled: can('member:read') });
   const query = useQuery({ queryKey: [...workflowKeys.versions(workspace.id, workflow.id), page], queryFn: ({ signal }) => workflowsApi.versions(workspace.id, workflow.id, page, signal) });
   const detail = useQuery({ queryKey: workflowKeys.version(workspace.id, workflow.id, inspect ?? 0), queryFn: ({ signal }) => workflowsApi.version(workspace.id, workflow.id, inspect!, signal), enabled: inspect !== null, staleTime: Infinity });
   if (query.isPending) return <Skeleton className="h-64" />;
   if (query.isError) return <ErrorState compact error={query.error} onRetry={() => void query.refetch()} />;
-  return <div className="space-y-4"><p className="text-xs text-muted">Append-only history. Restore adds a copy; publish an older version to roll back.</p>{query.data.items.map((version) => <div key={version.version} className="space-y-2.5 rounded-lg border border-line p-3"><div className="flex flex-wrap items-center gap-1.5"><button className="text-xs font-semibold hover:text-brand-700 hover:underline" onClick={() => setInspect(version.version)}>Version {version.version}</button>{version.version === workflow.currentVersion && <Badge>Current</Badge>}{version.version === workflow.publishedVersion && <Badge tone="success">Published</Badge>}<Badge tone={version.valid ? 'success' : 'warning'}>{version.valid ? 'Valid' : 'Invalid draft'}</Badge></div><p className="text-xs text-muted">{version.changeNote || 'No change note.'}</p><p className="text-[10px] text-faint"><RelativeTime value={version.createdAt} />{version.restoredFromVersion !== null ? ` · Restored from v${version.restoredFromVersion}` : ''}</p><p className="truncate text-[10px] text-faint" title={version.createdById ?? undefined}>Author: {version.createdById ?? 'System'}</p><div className="flex flex-wrap gap-2">{can('workflow:update') && <Button size="xs" variant="secondary" disabled={busy || version.version === workflow.currentVersion} onClick={() => onRestore(version.version)}>Restore</Button>}{can('workflow:publish') && <Button size="xs" variant="secondary" disabled={busy || dirty || !version.valid || workflow.status === 'ACTIVE' && version.version === workflow.publishedVersion} title={!version.valid ? 'This version has validation errors.' : dirty ? 'Save or discard unsaved changes first.' : undefined} onClick={() => onPublish(version.version)}>Publish this version</Button>}</div></div>)}{query.data.pagination.totalPages > 1 && <Pagination pagination={query.data.pagination} onPageChange={setPage} noun={['version', 'versions']} busy={query.isFetching} />}<Dialog open={inspect !== null} onOpenChange={(open) => !open && setInspect(null)}><DialogContent size="xl"><DialogHeader title={`Version ${inspect}`} description="An immutable snapshot of this workflow's graph, limits, and validation report." /><DialogBody>{detail.isPending ? <Skeleton className="h-64" /> : detail.isError ? <ErrorState error={detail.error} onRetry={() => void detail.refetch()} /> : <VersionSnapshot version={detail.data} />}</DialogBody><DialogFooter><Button variant="secondary" onClick={() => setInspect(null)}>Close</Button></DialogFooter></DialogContent></Dialog></div>;
+  return <div className="space-y-4"><p className="text-xs text-muted">Append-only history. Restore adds a copy; publish an older version to roll back.</p>{query.data.items.map((version) => <div key={version.version} className="space-y-2.5 rounded-lg border border-line p-3"><div className="flex flex-wrap items-center gap-1.5"><button className="text-xs font-semibold hover:text-brand-700 hover:underline" onClick={() => setInspect(version.version)}>Version {version.version}</button>{version.version === workflow.currentVersion && <Badge>Current</Badge>}{version.version === workflow.publishedVersion && <Badge tone="success">Published</Badge>}<Badge tone={version.valid ? 'success' : 'warning'}>{version.valid ? 'Valid' : 'Invalid draft'}</Badge></div><p className="text-xs text-muted">{version.changeNote || 'No change note.'}</p><p className="text-[10px] text-faint"><RelativeTime value={version.createdAt} />{version.restoredFromVersion !== null ? ` · Restored from v${version.restoredFromVersion}` : ''}</p><p className="truncate text-[10px] text-faint" title={version.createdById ?? undefined}>Author: {version.createdById ? names.data?.get(version.createdById)?.name ?? version.createdById : 'System'}</p><div className="flex flex-wrap gap-2">{can('workflow:update') && <Button size="xs" variant="secondary" disabled={busy || version.version === workflow.currentVersion} onClick={() => onRestore(version.version)}>Restore</Button>}{can('workflow:publish') && <Button size="xs" variant="secondary" disabled={busy || dirty || !version.valid || workflow.status === 'ACTIVE' && version.version === workflow.publishedVersion} title={!version.valid ? 'This version has validation errors.' : dirty ? 'Save or discard unsaved changes first.' : undefined} onClick={() => onPublish(version.version)}>Publish this version</Button>}</div></div>)}{query.data.pagination.totalPages > 1 && <Pagination pagination={query.data.pagination} onPageChange={setPage} noun={['version', 'versions']} busy={query.isFetching} />}<Dialog open={inspect !== null} onOpenChange={(open) => !open && setInspect(null)}><DialogContent size="xl"><DialogHeader title={`Version ${inspect}`} description="An immutable snapshot of this workflow's graph, limits, and validation report." /><DialogBody>{detail.isPending ? <Skeleton className="h-64" /> : detail.isError ? <ErrorState error={detail.error} onRetry={() => void detail.refetch()} /> : <VersionSnapshot version={detail.data} />}</DialogBody><DialogFooter><Button variant="secondary" onClick={() => setInspect(null)}>Close</Button></DialogFooter></DialogContent></Dialog></div>;
 }
 
 function VersionSnapshot({ version }: { version: WorkflowVersion }) {

@@ -24,6 +24,7 @@ import { CLASSIFICATION_META } from '@/features/knowledge/shared/meta';
 import { useKnowledgeBases } from '@/features/knowledge/shared/use-knowledge-access';
 import { useWorkspace } from '@/features/workspaces/workspace-context';
 import { useAgentCan } from '../shared/use-agent-can';
+import { ToolGrantPicker } from '@/features/tools/tool-grant-picker';
 
 export interface SectionProps {
   form: AgentForm;
@@ -694,15 +695,20 @@ export function AccessSection({ form, set, errors, disabled }: SectionProps) {
   );
 }
 
-// ── Tools (read-only in Phase 4, §4.10) ─────────────────────────────────────
+// ── Tools (Phase 5 catalogue grants) ───────────────────────────────────────
 
-export function ToolsSection({ form }: Pick<SectionProps, 'form'>) {
+export function ToolsSection({ form, set, errors, disabled }: SectionProps) {
   return (
-    <Section id="tools" title="Tools" icon={<Wrench />} description="Tools are granted from the tool catalogue in a later release. Calls a tool makes show up in conversations.">
+    <Section id="tools" title="Tools" icon={<Wrench />} description="Choose the capabilities this agent may use. Tool calls and policy refusals appear in conversations and the execution ledger.">
       <div className="flex flex-wrap items-center gap-2 text-[13px] text-ink-soft">
         <Badge tone="outline">{form.toolIds.length ? pluralize(form.toolIds.length, 'tool') : 'No tools'}</Badge>
         <span className="text-muted">Up to {pluralize(form.maxIterations, 'tool round')} per answer.</span>
       </div>
+      <ToolGrantPicker selected={form.toolIds} onChange={(ids) => set('toolIds', ids)} disabled={disabled} />
+      {errors.toolIds && <p role="alert" className="text-[13px] text-danger-700">{errors.toolIds}</p>}
+      <Field label="Maximum tool rounds per answer" hint="Zero disables tool use. This deployment supports up to 8 rounds." error={errors.maxIterations}>
+        <Select value={String(form.maxIterations)} onValueChange={(value) => set('maxIterations', Number(value))} disabled={disabled} options={Array.from({ length: 9 }, (_, value) => ({ value: String(value), label: value === 0 ? '0 · Tool use disabled' : String(value) }))} />
+      </Field>
     </Section>
   );
 }

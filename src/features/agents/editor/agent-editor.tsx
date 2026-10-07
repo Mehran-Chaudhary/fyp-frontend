@@ -139,6 +139,11 @@ export function AgentEditor({ agent }: { agent: Agent | null }) {
         next.model = messageFor(error);
         void queryClient.invalidateQueries({ queryKey: queryKeys.llm(workspace.id) });
         break;
+      case 'TOOL_NOT_FOUND':
+      case 'TOOL_DISABLED':
+        next.toolIds = 'A selected tool was removed or disabled. Review the grants before saving again.';
+        void queryClient.invalidateQueries({ queryKey: ['ws', workspace.id, 'tools'] });
+        break;
       case 'VALIDATION_FAILED': {
         const mapped = mapServerFieldErrors(error.fieldErrors());
         Object.assign(next, mapped.errors);
@@ -315,7 +320,7 @@ export function AgentEditor({ agent }: { agent: Agent | null }) {
         <MemorySection {...sectionProps} />
         <AnswersSection {...sectionProps} />
         <AccessSection {...sectionProps} />
-        <ToolsSection form={form} />
+        <ToolsSection {...sectionProps} />
 
         <SaveBar sticky={creating || dirty}>
           <div className="min-w-0 flex-1 text-[13px]">

@@ -53,9 +53,10 @@ function AuditContent() {
   const exportFile = useMutation({ mutationFn: async (sequence?: string) => {
     const signal = requestLifetime.current?.signal;
     const file = sequence ? await auditApi.archive(ws.id, sequence, signal) : await auditApi.export(ws.id, { from: filters.from, to: filters.to }, signal);
-    if (signal?.aborted) return;
+    if (signal?.aborted) return false;
     saveGovernanceFile(file, sequence ? `audit-archive-${sequence}.ndjson` : 'audit-log.ndjson');
-  }, onSuccess: () => toast.success('Audit download ready') });
+    return true;
+  }, onSuccess: (saved) => { if (saved) { toast.success('Audit download ready'); void client.invalidateQueries({ queryKey: ['ws', ws.id, 'audit'] }); } } });
   function apply() {
     if (draft.from && draft.to) { const error = validateWindow(draft.from, draft.to, Number.MAX_SAFE_INTEGER); if (error) { setFilterError(error); return; } }
     if (draft.actorId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(draft.actorId)) { setFilterError('Actor ID must be a valid UUID.'); return; }
